@@ -1,0 +1,61 @@
+name: Go CI
+
+on:
+  workflow_call:
+    inputs:
+      go-version:
+        description: Go version used by the service.
+        required: false
+        type: string
+        default: "1.26.3"
+      working-directory:
+        description: Directory containing go.mod.
+        required: false
+        type: string
+        default: "."
+      run-race:
+        description: Run tests with the race detector.
+        required: false
+        type: boolean
+        default: true
+      run-vet:
+        description: Run go vet.
+        required: false
+        type: boolean
+        default: true
+
+jobs:
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: ${{ inputs.working-directory }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version: ${{ inputs.go-version }}
+          cache: true
+          cache-dependency-path: ${{ inputs.working-directory }}/go.mod
+
+      - name: Download modules
+        run: go mod download
+
+      - name: Vet
+        if: ${{ inputs.run-vet }}
+        run: go vet ./...
+
+      - name: Test
+        if: ${{ !inputs.run-race }}
+        run: go test -v ./...
+
+      - name: Test with race detector
+        if: ${{ inputs.run-race }}
+        run: go test -v -race ./...
+
+      - name: Build server
+        run: go build -v ./cmd/server
