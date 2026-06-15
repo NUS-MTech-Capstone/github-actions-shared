@@ -1,0 +1,69 @@
+name: Node CI
+
+on:
+  workflow_call:
+    inputs:
+      node-version:
+        description: Node.js version used for install, test, and build.
+        required: false
+        type: string
+        default: "22"
+      working-directory:
+        description: Directory containing package-lock.json.
+        required: false
+        type: string
+        default: .
+      run-lint:
+        description: Run the configured lint command.
+        required: false
+        type: boolean
+        default: false
+      lint-command:
+        description: Non-mutating lint command.
+        required: false
+        type: string
+        default: npm run lint
+      test-command:
+        description: Test command.
+        required: false
+        type: string
+        default: npm test
+      build-command:
+        description: Production build command.
+        required: false
+        type: string
+        default: npm run build
+
+permissions:
+  contents: read
+
+jobs:
+  ci:
+    name: Test and build
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: ${{ inputs.working-directory }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ inputs.node-version }}
+          cache: npm
+          cache-dependency-path: ${{ inputs.working-directory }}/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Lint
+        if: inputs.run-lint
+        run: ${{ inputs.lint-command }}
+
+      - name: Test
+        run: ${{ inputs.test-command }}
+
+      - name: Build
+        run: ${{ inputs.build-command }}

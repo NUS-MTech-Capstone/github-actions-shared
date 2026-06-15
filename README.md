@@ -8,6 +8,24 @@ repositories directly applying manifests to the cluster.
 
 ## Usage
 
+### Node CI
+
+Create `.github/workflows/ci.yaml` in a Node service repository:
+
+```yaml
+jobs:
+  ci:
+    uses: NUS-MTech-Capstone/github-actions-shared/.github/workflows/node-ci.yaml@main
+    with:
+      node-version: "22"
+      run-lint: true
+      test-command: npm test -- --runInBand
+      build-command: npm run build
+```
+
+The workflow uses `npm ci`, npm dependency caching, optional non-mutating lint,
+tests, and a production build.
+
 ### Go CI
 
 Create `.github/workflows/ci.yaml` in a service repository:
