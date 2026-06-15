@@ -27,6 +27,26 @@ jobs:
       go-version: "1.26.3"
 ```
 
+The Go workflow runs tests, `go vet`, a `gosec` SAST scan, and a
+`govulncheck` SCA scan. Tests generate coverage by default. The coverage table
+is written to the GitHub Actions job summary, and `coverage.out`,
+`coverage.txt`, and a browsable `coverage.html` are uploaded in the
+`go-coverage` artifact for 14 days.
+
+Coverage and both scans are enabled by default. A repository can disable one
+temporarily or pin a different `gosec` release:
+
+```yaml
+jobs:
+  ci:
+    uses: NUS-MTech-Capstone/github-actions-shared/.github/workflows/go-ci.yaml@main
+    with:
+      run-coverage: true
+      run-sast: false
+      run-sca: true
+      gosec-version: "v2.27.1"
+```
+
 ### Build and Push Image to ECR
 
 Create `.github/workflows/image.yaml` in a service repository:

@@ -23,6 +23,29 @@ on:
         required: false
         type: boolean
         default: true
+      run-coverage:
+        description: Generate and upload test coverage reports.
+        required: false
+        type: boolean
+        default: true
+      run-sast:
+        description: Run gosec static application security testing.
+        required: false
+        type: boolean
+        default: true
+      run-sca:
+        description: Run govulncheck software composition analysis.
+        required: false
+        type: boolean
+        default: true
+      gosec-version:
+        description: Version of gosec to install.
+        required: false
+        type: string
+        default: "v2.27.1"
+
+permissions:
+  contents: read
 
 jobs:
   test:
@@ -50,12 +73,82 @@ jobs:
         run: go vet ./...
 
       - name: Test
-        if: ${{ !inputs.run-race }}
-        run: go test -v ./...
+        shell: bash
+        env:
+          RUN_COVERAGE: ${{ inputs.run-coverage }}
+          RUN_RACE: ${{ inputs.run-race }}
+        run: |
+          args=(-v)
+          if [ "$RUN_RACE" = "true" ]; then
+            args+=(-race)
+          fi
+          if [ "$RUN_COVERAGE" = "true" ]; then
+            args+=(-covermode=atomic -coverprofile=coverage.out)
+          fi
+          go test "${args[@]}" ./...
 
-      - name: Test with race detector
-        if: ${{ inputs.run-race }}
-        run: go test -v -race ./...
+      - name: Generate coverage reports
+        if: ${{ inputs.run-coverage }}
+        run: |
+          go tool cover -func=coverage.out > coverage.txt
+          go tool cover -html=coverage.out -o coverage.html
+          {
+            echo "## Test coverage"
+            echo '```text'
+            cat coverage.txt
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload coverage reports
+        if: ${{ inputs.run-coverage }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: go-coverage
+          path: |
+            ${{ inputs.working-directory }}/coverage.out
+            ${{ inputs.working-directory }}/coverage.txt
+            ${{ inputs.working-directory }}/coverage.html
+          if-no-files-found: error
+          retention-days: 14
 
       - name: Build server
         run: go build -v ./cmd/server
+
+  sast:
+    name: SAST (gosec)
+    if: ${{ inputs.run-sast }}
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: ${{ inputs.working-directory }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version: ${{ inputs.go-version }}
+          cache: true
+          cache-dependency-path: ${{ inputs.working-directory }}/go.mod
+
+      - name: Install gosec
+        env:
+          GOSEC_VERSION: ${{ inputs.gosec-version }}
+        run: go install github.com/securego/gosec/v2/cmd/gosec@${GOSEC_VERSION}
+
+      - name: Run gosec
+        run: gosec -exclude-generated ./...
+
+  sca:
+    name: SCA (govulncheck)
+    if: ${{ inputs.run-sca }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Run govulncheck
+        uses: golang/govulncheck-action@v1
+        with:
+          go-version-input: ${{ inputs.go-version }}
+          go-package: ./...
+          work-dir: ${{ inputs.working-directory }}
+          cache-dependency-path: ${{ inputs.working-directory }}/go.mod
