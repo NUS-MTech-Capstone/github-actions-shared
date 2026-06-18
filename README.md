@@ -91,3 +91,27 @@ jobs:
 Use the commit SHA tag in Kubernetes manifests for deterministic releases. Later,
 ArgoCD Image Updater or a separate GitOps promotion workflow can update the
 image tag in the `kubernetes` repository after this workflow pushes to ECR.
+
+### Promote Image to Kubernetes GitOps
+
+After an image has been pushed, service repositories can open a promotion PR in
+the Kubernetes GitOps repository:
+
+```yaml
+jobs:
+  promote:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    uses: NUS-MTech-Capstone/github-actions-shared/.github/workflows/promote-kubernetes-image.yaml@main
+    with:
+      service-name: session-manager
+      image-name: 000000000000.dkr.ecr.ap-southeast-1.amazonaws.com/dendenmushi/session-manager
+      image-tag: ${{ github.sha }}
+    secrets:
+      GITOPS_TOKEN: ${{ secrets.GITOPS_TOKEN }}
+```
+
+`GITOPS_TOKEN` should be a fine-scoped GitHub App token or equivalent credential
+that can push a branch and open a pull request in `NUS-MTech-Capstone/kubernetes`.
+The workflow updates exactly one image entry, renders the dev overlay with
+`kubectl kustomize`, and opens or updates a PR. Argo CD deploys after that PR is
+merged to the branch it tracks.

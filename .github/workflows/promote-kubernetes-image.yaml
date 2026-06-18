@@ -1,0 +1,139 @@
+name: Promote Kubernetes Image
+
+on:
+  workflow_call:
+    inputs:
+      service-name:
+        description: Service name used in branch, commit, and PR text.
+        required: true
+        type: string
+      image-name:
+        description: Existing Kustomize image name to update.
+        required: true
+        type: string
+      image-tag:
+        description: Immutable image tag to promote.
+        required: true
+        type: string
+      kubernetes-repository:
+        description: GitOps repository containing Kubernetes manifests.
+        required: false
+        type: string
+        default: NUS-MTech-Capstone/kubernetes
+      kustomization-path:
+        description: Kustomization file to update.
+        required: false
+        type: string
+        default: apps/dendenmushi/overlays/dev/kustomization.yaml
+      render-path:
+        description: Kustomize directory to render after updating the image.
+        required: false
+        type: string
+        default: apps/dendenmushi/overlays/dev
+      base-branch:
+        description: GitOps base branch tracked by Argo CD.
+        required: false
+        type: string
+        default: main
+    secrets:
+      GITOPS_TOKEN:
+        description: Fine-scoped token or GitHub App token with pull request write access to the Kubernetes repository.
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  promote:
+    name: Promote
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Kubernetes repository
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ inputs.kubernetes-repository }}
+          ref: ${{ inputs.base-branch }}
+          token: ${{ secrets.GITOPS_TOKEN }}
+          path: kubernetes
+
+      - name: Update Kustomize image tag
+        working-directory: kubernetes
+        shell: bash
+        env:
+          IMAGE_NAME: ${{ inputs.image-name }}
+          IMAGE_TAG: ${{ inputs.image-tag }}
+          KUSTOMIZATION_PATH: ${{ inputs.kustomization-path }}
+        run: |
+          ruby <<'RUBY'
+          path = ENV.fetch("KUSTOMIZATION_PATH")
+          image_name = ENV.fetch("IMAGE_NAME")
+          image_tag = ENV.fetch("IMAGE_TAG")
+          lines = File.readlines(path, chomp: true)
+          in_target = false
+          matches = 0
+          updated = false
+
+          lines.map! do |line|
+            if line =~ /^\s*-\s+name:\s+#{Regexp.escape(image_name)}\s*$/
+              in_target = true
+              matches += 1
+              line
+            elsif in_target && line =~ /^(\s*)newTag:\s+.*$/
+              in_target = false
+              updated = true
+              "#{$1}newTag: #{image_tag}"
+            elsif in_target && line =~ /^\s*-\s+name:\s+/
+              abort "image #{image_name} has no newTag before next image entry"
+            else
+              line
+            end
+          end
+
+          abort "expected exactly one image match for #{image_name}, found #{matches}" unless matches == 1
+          abort "failed to update newTag for #{image_name}" unless updated
+          File.write(path, lines.join("\n") + "\n")
+          RUBY
+
+      - name: Render Kustomize overlay
+        working-directory: kubernetes
+        run: kubectl kustomize "${{ inputs.render-path }}" >/dev/null
+
+      - name: Create promotion pull request
+        working-directory: kubernetes
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITOPS_TOKEN }}
+          SERVICE_NAME: ${{ inputs.service-name }}
+          IMAGE_TAG: ${{ inputs.image-tag }}
+          BASE_BRANCH: ${{ inputs.base-branch }}
+          KUSTOMIZATION_PATH: ${{ inputs.kustomization-path }}
+          KUBERNETES_REPOSITORY: ${{ inputs.kubernetes-repository }}
+        run: |
+          if git diff --quiet -- "${KUSTOMIZATION_PATH}"; then
+            echo "No GitOps change required for ${SERVICE_NAME}:${IMAGE_TAG}."
+            exit 0
+          fi
+
+          branch="promote/${SERVICE_NAME}-${IMAGE_TAG}"
+          git config user.name "dendenmushi-gitops-bot"
+          git config user.email "dendenmushi-gitops-bot@users.noreply.github.com"
+          git checkout -B "${branch}"
+          git add "${KUSTOMIZATION_PATH}"
+          git commit -m "chore: promote ${SERVICE_NAME} image ${IMAGE_TAG}"
+          git push --force-with-lease origin "${branch}"
+
+          title="chore: promote ${SERVICE_NAME} image ${IMAGE_TAG}"
+          body="Promotes \`${SERVICE_NAME}\` to immutable image tag \`${IMAGE_TAG}\` in the dev GitOps overlay."
+          if gh pr view "${branch}" --repo "${KUBERNETES_REPOSITORY}" >/dev/null 2>&1; then
+            gh pr edit "${branch}" \
+              --repo "${KUBERNETES_REPOSITORY}" \
+              --title "${title}" \
+              --body "${body}"
+          else
+            gh pr create \
+              --repo "${KUBERNETES_REPOSITORY}" \
+              --base "${BASE_BRANCH}" \
+              --head "${branch}" \
+              --title "${title}" \
+              --body "${body}"
+          fi
