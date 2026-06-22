@@ -24,7 +24,20 @@ jobs:
 ```
 
 The workflow uses `npm ci`, npm dependency caching, optional non-mutating lint,
-tests, and a production build.
+tests, a production build, a Semgrep SAST scan, and an `npm audit` SCA scan.
+SAST and SCA are enabled by default. A repository can disable one temporarily or
+override the commands:
+
+```yaml
+jobs:
+  ci:
+    uses: NUS-MTech-Capstone/github-actions-shared/.github/workflows/node-ci.yaml@main
+    with:
+      run-sast: true
+      sast-command: semgrep scan --config auto .
+      run-sca: true
+      sca-command: npm audit --audit-level=high
+```
 
 ### Go CI
 

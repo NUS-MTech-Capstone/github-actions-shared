@@ -33,6 +33,26 @@ on:
         required: false
         type: string
         default: npm run build
+      run-sast:
+        description: Run Semgrep static application security testing.
+        required: false
+        type: boolean
+        default: true
+      sast-command:
+        description: Static application security testing command.
+        required: false
+        type: string
+        default: semgrep scan --config auto .
+      run-sca:
+        description: Run npm audit software composition analysis.
+        required: false
+        type: boolean
+        default: true
+      sca-command:
+        description: Software composition analysis command.
+        required: false
+        type: string
+        default: npm audit --audit-level=high
 
 permissions:
   contents: read
@@ -67,3 +87,43 @@ jobs:
 
       - name: Build
         run: ${{ inputs.build-command }}
+
+  sast:
+    name: SAST (Semgrep)
+    if: ${{ inputs.run-sast }}
+    runs-on: ubuntu-latest
+    container:
+      image: semgrep/semgrep
+    defaults:
+      run:
+        working-directory: ${{ inputs.working-directory }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Run Semgrep
+        run: ${{ inputs.sast-command }}
+
+  sca:
+    name: SCA (npm audit)
+    if: ${{ inputs.run-sca }}
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: ${{ inputs.working-directory }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ inputs.node-version }}
+          cache: npm
+          cache-dependency-path: ${{ inputs.working-directory }}/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run npm audit
+        run: ${{ inputs.sca-command }}
