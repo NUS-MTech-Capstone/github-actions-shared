@@ -16,9 +16,14 @@ class WorkflowsTest < Minitest::Test
     inputs = workflow_call_inputs(node_ci)
 
     assert_equal true, inputs.fetch("run-sast").fetch("default")
-    assert_equal "semgrep scan --config auto .", inputs.fetch("sast-command").fetch("default")
+    assert_equal "semgrep scan --config auto --sarif --output semgrep.sarif .",
+                 inputs.fetch("sast-command").fetch("default")
+    assert_equal "semgrep.sarif", inputs.fetch("sast-artifact-path").fetch("default")
     assert_equal true, inputs.fetch("run-sca").fetch("default")
-    assert_equal "npm audit --audit-level=high", inputs.fetch("sca-command").fetch("default")
+    assert_equal "npm audit --audit-level=high --json > npm-audit.json",
+                 inputs.fetch("sca-command").fetch("default")
+    assert_equal "npm-audit.json", inputs.fetch("sca-artifact-path").fetch("default")
+    assert_equal "coverage/**", inputs.fetch("test-artifact-paths").fetch("default")
   end
 
   def test_node_ci_runs_semgrep_in_dedicated_job
@@ -28,6 +33,9 @@ class WorkflowsTest < Minitest::Test
     assert_equal "semgrep/semgrep", job.fetch("container").fetch("image")
     assert_includes step_names(job), "Run Semgrep"
     assert_equal "${{ inputs.sast-command }}", step_by_name(job, "Run Semgrep").fetch("run")
+    assert_equal true, step_by_name(job, "Run Semgrep").fetch("continue-on-error")
+    assert_artifact_upload job, "Upload Semgrep report", "node-sast-semgrep", "${{ inputs.working-directory }}/${{ inputs.sast-artifact-path }}"
+    assert_refail_step job, "Fail on Semgrep findings", "${{ steps.semgrep.outcome == 'failure' }}"
   end
 
   def test_node_ci_runs_npm_audit_in_dedicated_job
@@ -37,6 +45,43 @@ class WorkflowsTest < Minitest::Test
     assert_includes step_names(job), "Set up Node.js"
     assert_includes step_names(job), "Install dependencies"
     assert_equal "${{ inputs.sca-command }}", step_by_name(job, "Run npm audit").fetch("run")
+    assert_equal true, step_by_name(job, "Run npm audit").fetch("continue-on-error")
+    assert_artifact_upload job, "Upload npm audit report", "node-sca-npm-audit", "${{ inputs.working-directory }}/${{ inputs.sca-artifact-path }}"
+    assert_refail_step job, "Fail on npm audit findings", "${{ steps.npm-audit.outcome == 'failure' }}"
+  end
+
+  def test_node_ci_uploads_test_artifacts
+    job = node_ci.fetch("jobs").fetch("ci")
+
+    assert_artifact_upload job, "Upload test artifacts", "node-test-artifacts", "${{ inputs.working-directory }}/${{ inputs.test-artifact-paths }}"
+    assert_equal "ignore", step_by_name(job, "Upload test artifacts").fetch("with").fetch("if-no-files-found")
+  end
+
+  def test_go_ci_exposes_security_artifact_inputs
+    inputs = workflow_call_inputs(go_ci)
+
+    assert_equal "gosec.sarif", inputs.fetch("gosec-artifact-path").fetch("default")
+    assert_equal "govulncheck.json", inputs.fetch("govulncheck-artifact-path").fetch("default")
+  end
+
+  def test_go_ci_uploads_coverage_and_scan_artifacts
+    test_job = go_ci.fetch("jobs").fetch("test")
+    sast_job = go_ci.fetch("jobs").fetch("sast")
+    sca_job = go_ci.fetch("jobs").fetch("sca")
+
+    assert_artifact_upload test_job, "Upload coverage reports", "go-coverage", nil, "${{ always() && inputs.run-coverage }}"
+    assert_artifact_upload sast_job, "Upload gosec report", "go-sast-gosec", "${{ inputs.working-directory }}/${{ inputs.gosec-artifact-path }}"
+    assert_artifact_upload sca_job, "Upload govulncheck report", "go-sca-govulncheck", "${{ inputs.working-directory }}/${{ inputs.govulncheck-artifact-path }}"
+  end
+
+  def test_go_ci_refails_after_security_artifact_uploads
+    sast_job = go_ci.fetch("jobs").fetch("sast")
+    sca_job = go_ci.fetch("jobs").fetch("sca")
+
+    assert_equal true, step_by_name(sast_job, "Run gosec").fetch("continue-on-error")
+    assert_refail_step sast_job, "Fail on gosec findings", "${{ steps.gosec.outcome == 'failure' }}"
+    assert_equal true, step_by_name(sca_job, "Run govulncheck").fetch("continue-on-error")
+    assert_refail_step sca_job, "Fail on govulncheck findings", "${{ steps.govulncheck.outcome == 'failure' }}"
   end
 
   private
@@ -47,6 +92,10 @@ class WorkflowsTest < Minitest::Test
 
   def node_ci
     @node_ci ||= YAML.load_file(File.join(WORKFLOW_DIR, "node-ci.yaml"))
+  end
+
+  def go_ci
+    @go_ci ||= YAML.load_file(File.join(WORKFLOW_DIR, "go-ci.yaml"))
   end
 
   def workflow_call_inputs(workflow)
@@ -61,5 +110,22 @@ class WorkflowsTest < Minitest::Test
 
   def step_by_name(job, name)
     job.fetch("steps").find { |step| step["name"] == name } || flunk("missing step #{name}")
+  end
+
+  def assert_artifact_upload(job, step_name, artifact_name, artifact_path, condition = "${{ always() }}")
+    step = step_by_name(job, step_name)
+
+    assert_equal condition, step.fetch("if")
+    assert_equal "actions/upload-artifact@v4", step.fetch("uses")
+    assert_equal artifact_name, step.fetch("with").fetch("name")
+    assert_equal artifact_path, step.fetch("with").fetch("path") if artifact_path
+    assert_equal 14, step.fetch("with").fetch("retention-days")
+  end
+
+  def assert_refail_step(job, step_name, condition)
+    step = step_by_name(job, step_name)
+
+    assert_equal condition, step.fetch("if")
+    assert_equal "exit 1", step.fetch("run")
   end
 end

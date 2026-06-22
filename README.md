@@ -33,8 +33,10 @@ jobs:
 
 The workflow uses `npm ci`, npm dependency caching, optional non-mutating lint,
 tests, a production build, a Semgrep SAST scan, and an `npm audit` SCA scan.
-SAST and SCA are enabled by default. A repository can disable one temporarily or
-override the commands:
+It uploads best-effort test/coverage artifacts from `coverage/**`, plus
+Semgrep SARIF and npm audit JSON reports, retaining artifacts for 14 days.
+SAST and SCA are enabled by default. A repository can disable one temporarily,
+override the commands, or point artifact inputs at custom report paths:
 
 ```yaml
 jobs:
@@ -42,9 +44,11 @@ jobs:
     uses: NUS-MTech-Capstone/github-actions-shared/.github/workflows/node-ci.yaml@main
     with:
       run-sast: true
-      sast-command: semgrep scan --config auto .
+      sast-command: semgrep scan --config auto --sarif --output semgrep.sarif .
+      sast-artifact-path: semgrep.sarif
       run-sca: true
-      sca-command: npm audit --audit-level=high
+      sca-command: npm audit --audit-level=high --json > npm-audit.json
+      sca-artifact-path: npm-audit.json
 ```
 
 ### Go CI
@@ -70,7 +74,8 @@ The Go workflow runs tests, `go vet`, a `gosec` SAST scan, and a
 `govulncheck` SCA scan. Tests generate coverage by default. The coverage table
 is written to the GitHub Actions job summary, and `coverage.out`,
 `coverage.txt`, and a browsable `coverage.html` are uploaded in the
-`go-coverage` artifact for 14 days.
+`go-coverage` artifact for 14 days. SAST and SCA reports are uploaded as
+`go-sast-gosec` and `go-sca-govulncheck`.
 
 Coverage and both scans are enabled by default. A repository can disable one
 temporarily or pin a different `gosec` release:

@@ -43,6 +43,16 @@ on:
         required: false
         type: string
         default: "v2.27.1"
+      gosec-artifact-path:
+        description: Path to the gosec SARIF report, relative to working-directory.
+        required: false
+        type: string
+        default: gosec.sarif
+      govulncheck-artifact-path:
+        description: Path to the govulncheck JSON report, relative to working-directory.
+        required: false
+        type: string
+        default: govulncheck.json
 
 permissions:
   contents: read
@@ -100,7 +110,7 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload coverage reports
-        if: ${{ inputs.run-coverage }}
+        if: ${{ always() && inputs.run-coverage }}
         uses: actions/upload-artifact@v4
         with:
           name: go-coverage
@@ -138,17 +148,58 @@ jobs:
         run: go install github.com/securego/gosec/v2/cmd/gosec@${GOSEC_VERSION}
 
       - name: Run gosec
-        run: gosec -exclude-generated ./...
+        id: gosec
+        continue-on-error: true
+        run: gosec -exclude-generated -fmt sarif -out "${{ inputs.gosec-artifact-path }}" ./...
+
+      - name: Upload gosec report
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: go-sast-gosec
+          path: ${{ inputs.working-directory }}/${{ inputs.gosec-artifact-path }}
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Fail on gosec findings
+        if: ${{ steps.gosec.outcome == 'failure' }}
+        run: exit 1
 
   sca:
     name: SCA (govulncheck)
     if: ${{ inputs.run-sca }}
     runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: ${{ inputs.working-directory }}
     steps:
-      - name: Run govulncheck
-        uses: golang/govulncheck-action@v1
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
         with:
-          go-version-input: ${{ inputs.go-version }}
-          go-package: ./...
-          work-dir: ${{ inputs.working-directory }}
+          go-version: ${{ inputs.go-version }}
+          cache: true
           cache-dependency-path: ${{ inputs.working-directory }}/go.mod
+
+      - name: Install govulncheck
+        run: go install golang.org/x/vuln/cmd/govulncheck@latest
+
+      - name: Run govulncheck
+        id: govulncheck
+        continue-on-error: true
+        run: govulncheck -json ./... > "${{ inputs.govulncheck-artifact-path }}"
+
+      - name: Upload govulncheck report
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: go-sca-govulncheck
+          path: ${{ inputs.working-directory }}/${{ inputs.govulncheck-artifact-path }}
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Fail on govulncheck findings
+        if: ${{ steps.govulncheck.outcome == 'failure' }}
+        run: exit 1
