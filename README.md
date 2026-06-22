@@ -6,6 +6,14 @@ The workflows intentionally stop at test/build and image publishing. EKS rollout
 should be handled later by Kubernetes manifests and ArgoCD, not by service
 repositories directly applying manifests to the cluster.
 
+## Validation
+
+Run the workflow tests before committing shared workflow changes:
+
+```bash
+ruby test/workflows_test.rb
+```
+
 ## Usage
 
 ### Node CI
