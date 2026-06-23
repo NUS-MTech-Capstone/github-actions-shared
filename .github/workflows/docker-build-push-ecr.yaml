@@ -21,6 +21,11 @@ on:
         required: false
         type: string
         default: .
+      source-ref:
+        description: Git ref or SHA to check out before building. Leave empty to use the triggering workflow ref.
+        required: false
+        type: string
+        default: ""
       image-tag:
         description: Primary image tag. Leave empty to use the commit SHA.
         required: false
@@ -67,6 +72,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.source-ref }}
 
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4

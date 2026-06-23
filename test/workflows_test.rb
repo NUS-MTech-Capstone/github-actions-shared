@@ -24,6 +24,7 @@ class WorkflowsTest < Minitest::Test
                  inputs.fetch("sca-command").fetch("default")
     assert_equal "npm-audit.json", inputs.fetch("sca-artifact-path").fetch("default")
     assert_equal "coverage/**", inputs.fetch("test-artifact-paths").fetch("default")
+    assert_equal "coverage/lcov.info", inputs.fetch("coverage-lcov-path").fetch("default")
   end
 
   def test_node_ci_runs_semgrep_in_dedicated_job
@@ -53,7 +54,12 @@ class WorkflowsTest < Minitest::Test
   def test_node_ci_uploads_test_artifacts
     job = node_ci.fetch("jobs").fetch("ci")
 
+    assert_includes step_names(job), "Generate coverage summary"
+    assert_equal "${{ always() && inputs.coverage-lcov-path != '' }}",
+                 step_by_name(job, "Generate coverage summary").fetch("if")
     assert_artifact_upload job, "Upload test artifacts", "node-test-artifacts", "${{ inputs.working-directory }}/${{ inputs.test-artifact-paths }}"
+    assert_includes step_by_name(job, "Upload test artifacts").fetch("with").fetch("path"),
+                    "${{ inputs.working-directory }}/coverage-summary.md"
     assert_equal "ignore", step_by_name(job, "Upload test artifacts").fetch("with").fetch("if-no-files-found")
   end
 
@@ -62,6 +68,14 @@ class WorkflowsTest < Minitest::Test
 
     assert_equal "gosec.sarif", inputs.fetch("gosec-artifact-path").fetch("default")
     assert_equal "govulncheck.json", inputs.fetch("govulncheck-artifact-path").fetch("default")
+  end
+
+  def test_docker_image_workflow_can_checkout_explicit_source_ref
+    inputs = workflow_call_inputs(docker_image)
+    checkout = step_by_name(docker_image.fetch("jobs").fetch("image"), "Checkout")
+
+    assert_equal "", inputs.fetch("source-ref").fetch("default")
+    assert_equal "${{ inputs.source-ref }}", checkout.fetch("with").fetch("ref")
   end
 
   def test_go_ci_uploads_coverage_and_scan_artifacts
@@ -98,6 +112,10 @@ class WorkflowsTest < Minitest::Test
     @go_ci ||= YAML.load_file(File.join(WORKFLOW_DIR, "go-ci.yaml"))
   end
 
+  def docker_image
+    @docker_image ||= YAML.load_file(File.join(WORKFLOW_DIR, "docker-build-push-ecr.yaml"))
+  end
+
   def workflow_call_inputs(workflow)
     # Psych follows YAML 1.1 and parses the GitHub Actions "on" key as boolean true.
     on = workflow["on"] || workflow[true]
@@ -118,7 +136,7 @@ class WorkflowsTest < Minitest::Test
     assert_equal condition, step.fetch("if")
     assert_equal "actions/upload-artifact@v4", step.fetch("uses")
     assert_equal artifact_name, step.fetch("with").fetch("name")
-    assert_equal artifact_path, step.fetch("with").fetch("path") if artifact_path
+    assert_includes step.fetch("with").fetch("path"), artifact_path if artifact_path
     assert_equal 14, step.fetch("with").fetch("retention-days")
   end
 

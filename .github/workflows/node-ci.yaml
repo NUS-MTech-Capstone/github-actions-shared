@@ -38,6 +38,11 @@ on:
         required: false
         type: string
         default: coverage/**
+      coverage-lcov-path:
+        description: lcov coverage report path, relative to working-directory. Leave empty to skip coverage summary generation.
+        required: false
+        type: string
+        default: coverage/lcov.info
       run-sast:
         description: Run Semgrep static application security testing.
         required: false
@@ -100,12 +105,67 @@ jobs:
       - name: Test
         run: ${{ inputs.test-command }}
 
+      - name: Generate coverage summary
+        if: ${{ always() && inputs.coverage-lcov-path != '' }}
+        shell: bash
+        env:
+          LCOV_PATH: ${{ inputs.coverage-lcov-path }}
+        run: |
+          if [ ! -f "$LCOV_PATH" ]; then
+            echo "Coverage report ${LCOV_PATH} was not found; skipping summary."
+            exit 0
+          fi
+
+          node <<'NODE'
+          const fs = require("fs");
+          const path = process.env.LCOV_PATH;
+          const lcov = fs.readFileSync(path, "utf8");
+          const metrics = {
+            lines: { hit: 0, found: 0 },
+            functions: { hit: 0, found: 0 },
+            branches: { hit: 0, found: 0 },
+          };
+
+          for (const line of lcov.split(/\r?\n/)) {
+            const [key, value] = line.split(":");
+            const number = Number(value);
+            if (!Number.isFinite(number)) continue;
+
+            if (key === "LH") metrics.lines.hit += number;
+            if (key === "LF") metrics.lines.found += number;
+            if (key === "FNH") metrics.functions.hit += number;
+            if (key === "FNF") metrics.functions.found += number;
+            if (key === "BRH") metrics.branches.hit += number;
+            if (key === "BRF") metrics.branches.found += number;
+          }
+
+          const percent = ({ hit, found }) => found === 0 ? "n/a" : `${((hit / found) * 100).toFixed(2)}%`;
+          const rows = [
+            ["Lines", metrics.lines],
+            ["Functions", metrics.functions],
+            ["Branches", metrics.branches],
+          ];
+          const markdown = [
+            "## Test coverage",
+            "",
+            "| Metric | Covered | Total | Coverage |",
+            "| --- | ---: | ---: | ---: |",
+            ...rows.map(([name, metric]) => `| ${name} | ${metric.hit} | ${metric.found} | ${percent(metric)} |`),
+            "",
+          ].join("\n");
+
+          fs.writeFileSync("coverage-summary.md", markdown);
+          fs.appendFileSync(process.env.GITHUB_STEP_SUMMARY, markdown);
+          NODE
+
       - name: Upload test artifacts
         if: ${{ always() }}
         uses: actions/upload-artifact@v4
         with:
           name: node-test-artifacts
-          path: ${{ inputs.working-directory }}/${{ inputs.test-artifact-paths }}
+          path: |
+            ${{ inputs.working-directory }}/${{ inputs.test-artifact-paths }}
+            ${{ inputs.working-directory }}/coverage-summary.md
           if-no-files-found: ignore
           retention-days: 14
 

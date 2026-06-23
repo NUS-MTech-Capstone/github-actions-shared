@@ -27,16 +27,33 @@ jobs:
     with:
       node-version: "22"
       run-lint: true
-      test-command: npm test -- --runInBand
+      test-command: npm test -- --runInBand --coverage
       build-command: npm run build
 ```
 
 The workflow uses `npm ci`, npm dependency caching, optional non-mutating lint,
 tests, a production build, a Semgrep SAST scan, and an `npm audit` SCA scan.
-It uploads best-effort test/coverage artifacts from `coverage/**`, plus
-Semgrep SARIF and npm audit JSON reports, retaining artifacts for 14 days.
+It uploads best-effort test/coverage artifacts from `coverage/**`, generates a
+coverage table in the GitHub Actions job summary when `coverage/lcov.info`
+exists, and uploads `coverage-summary.md` with the test artifacts. Semgrep SARIF
+and npm audit JSON reports are retained as separate artifacts for 14 days.
 SAST and SCA are enabled by default. A repository can disable one temporarily,
-override the commands, or point artifact inputs at custom report paths:
+override the commands, or point artifact inputs at custom report paths.
+
+For Angular CLI projects, use an Angular coverage command:
+
+```yaml
+jobs:
+  ci:
+    uses: NUS-MTech-Capstone/github-actions-shared/.github/workflows/node-ci.yaml@main
+    with:
+      node-version: "22"
+      run-lint: true
+      test-command: npm test -- --watch=false --code-coverage
+      build-command: npm run build
+```
+
+Security and artifact overrides:
 
 ```yaml
 jobs:
@@ -49,6 +66,7 @@ jobs:
       run-sca: true
       sca-command: npm audit --audit-level=high --json > npm-audit.json
       sca-artifact-path: npm-audit.json
+      coverage-lcov-path: coverage/lcov.info
 ```
 
 ### Go CI
@@ -93,22 +111,28 @@ jobs:
 
 ### Build and Push Image to ECR
 
-Create `.github/workflows/image.yaml` in a service repository:
+Create `.github/workflows/image.yaml` in a service repository. Keep this
+separate from `.github/workflows/ci.yaml`: CI proves the commit, while the image
+workflow publishes an immutable build artifact only after CI has passed.
 
 ```yaml
 name: Image
 
 on:
-  push:
+  workflow_run:
+    workflows: ["CI"]
+    types: [completed]
     branches: [main]
 
 jobs:
   image:
+    if: ${{ github.event.workflow_run.conclusion == 'success' }}
     uses: NUS-MTech-Capstone/github-actions-shared/.github/workflows/docker-build-push-ecr.yaml@main
     with:
       aws-region: ap-southeast-1
       ecr-repository: dendenmushi/session-manager
-      image-tag: ${{ github.sha }}
+      source-ref: ${{ github.event.workflow_run.head_sha }}
+      image-tag: ${{ github.event.workflow_run.head_sha }}
       extra-tags: main
     secrets:
       AWS_ROLE_ARN: ${{ secrets.AWS_ROLE_ARN }}
@@ -117,6 +141,14 @@ jobs:
 Use the commit SHA tag in Kubernetes manifests for deterministic releases. Later,
 ArgoCD Image Updater or a separate GitOps promotion workflow can update the
 image tag in the `kubernetes` repository after this workflow pushes to ECR.
+
+Name the service workflow `cd.yaml` only when it also promotes or deploys the
+image. For this project, prefer:
+
+- `ci.yaml`: tests, build, coverage, SAST, and SCA.
+- `image.yaml`: build and push the immutable image to ECR.
+- `promote.yaml`: open or update the GitOps PR that changes the Kubernetes
+  image tag.
 
 ### Promote Image to Kubernetes GitOps
 
