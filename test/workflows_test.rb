@@ -20,7 +20,7 @@ class WorkflowsTest < Minitest::Test
                  inputs.fetch("sast-command").fetch("default")
     assert_equal "semgrep.sarif", inputs.fetch("sast-artifact-path").fetch("default")
     assert_equal true, inputs.fetch("run-sca").fetch("default")
-    assert_equal "npm audit --audit-level=high --json > npm-audit.json",
+    assert_equal "npm audit --omit=dev --audit-level=high --json > npm-audit.json",
                  inputs.fetch("sca-command").fetch("default")
     assert_equal "npm-audit.json", inputs.fetch("sca-artifact-path").fetch("default")
     assert_equal "coverage/**", inputs.fetch("test-artifact-paths").fetch("default")

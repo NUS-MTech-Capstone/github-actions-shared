@@ -32,7 +32,8 @@ jobs:
 ```
 
 The workflow uses `npm ci`, npm dependency caching, optional non-mutating lint,
-tests, a production build, a Semgrep SAST scan, and an `npm audit` SCA scan.
+tests, a production build, a Semgrep SAST scan, and a production-dependency
+`npm audit` SCA scan.
 It uploads best-effort test/coverage artifacts from `coverage/**`, generates a
 coverage table in the GitHub Actions job summary when `coverage/lcov.info`
 exists, and uploads `coverage-summary.md` with the test artifacts. Semgrep SARIF
@@ -64,7 +65,7 @@ jobs:
       sast-command: semgrep scan --config auto --sarif --output semgrep.sarif .
       sast-artifact-path: semgrep.sarif
       run-sca: true
-      sca-command: npm audit --audit-level=high --json > npm-audit.json
+      sca-command: npm audit --omit=dev --audit-level=high --json > npm-audit.json
       sca-artifact-path: npm-audit.json
       coverage-lcov-path: coverage/lcov.info
 ```

@@ -67,7 +67,7 @@ on:
         description: Software composition analysis command.
         required: false
         type: string
-        default: npm audit --audit-level=high --json > npm-audit.json
+        default: npm audit --omit=dev --audit-level=high --json > npm-audit.json
       sca-artifact-path:
         description: npm audit report path, relative to working-directory.
         required: false
