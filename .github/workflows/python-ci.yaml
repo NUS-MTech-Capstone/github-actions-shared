@@ -1,0 +1,205 @@
+name: Python CI
+
+on:
+  workflow_call:
+    inputs:
+      python-version:
+        description: Python version used for install, test, and build.
+        required: false
+        type: string
+        default: "3.12"
+      working-directory:
+        description: Directory containing pyproject.toml.
+        required: false
+        type: string
+        default: "."
+      run-lint:
+        description: Run ruff check.
+        required: false
+        type: boolean
+        default: true
+      run-format-check:
+        description: Run ruff format in check mode.
+        required: false
+        type: boolean
+        default: true
+      run-typecheck:
+        description: Run mypy.
+        required: false
+        type: boolean
+        default: true
+      run-coverage:
+        description: Generate and upload pytest coverage reports.
+        required: false
+        type: boolean
+        default: true
+      run-sast:
+        description: Run Bandit static application security testing.
+        required: false
+        type: boolean
+        default: true
+      run-sca:
+        description: Run pip-audit software composition analysis.
+        required: false
+        type: boolean
+        default: true
+      bandit-artifact-path:
+        description: Bandit JSON report path, relative to working-directory.
+        required: false
+        type: string
+        default: bandit.json
+      pip-audit-artifact-path:
+        description: pip-audit JSON report path, relative to working-directory.
+        required: false
+        type: string
+        default: pip-audit.json
+
+permissions:
+  contents: read
+
+jobs:
+  ci:
+    name: Lint, typecheck, test, and build
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: ${{ inputs.working-directory }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: ${{ inputs.python-version }}
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+          cache-dependency-glob: ${{ inputs.working-directory }}/uv.lock
+
+      - name: Install dependencies
+        run: uv sync --frozen
+
+      - name: Ruff check
+        if: ${{ inputs.run-lint }}
+        run: uv run ruff check .
+
+      - name: Ruff format check
+        if: ${{ inputs.run-format-check }}
+        run: uv run ruff format --check .
+
+      - name: Mypy
+        if: ${{ inputs.run-typecheck }}
+        run: uv run mypy
+
+      - name: Pytest
+        env:
+          RUN_COVERAGE: ${{ inputs.run-coverage }}
+        run: |
+          if [ "$RUN_COVERAGE" = "true" ]; then
+            uv run pytest --cov=incident_agent --cov-report=term-missing --cov-report=xml --cov-report=html
+          else
+            uv run pytest
+          fi
+
+      - name: Upload coverage reports
+        if: ${{ always() && inputs.run-coverage }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: python-coverage
+          path: |
+            ${{ inputs.working-directory }}/coverage.xml
+            ${{ inputs.working-directory }}/htmlcov/**
+          if-no-files-found: ignore
+          retention-days: 14
+
+      - name: Build package
+        run: uv build --no-build-isolation
+
+  sast:
+    name: SAST (Bandit)
+    if: ${{ inputs.run-sast }}
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: ${{ inputs.working-directory }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: ${{ inputs.python-version }}
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+          cache-dependency-glob: ${{ inputs.working-directory }}/uv.lock
+
+      - name: Install dependencies
+        run: uv sync --frozen
+
+      - name: Run Bandit
+        id: bandit
+        continue-on-error: true
+        run: uv run bandit -r src -f json -o "${{ inputs.bandit-artifact-path }}"
+
+      - name: Upload Bandit report
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: python-sast-bandit
+          path: ${{ inputs.working-directory }}/${{ inputs.bandit-artifact-path }}
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Fail on Bandit findings
+        if: ${{ steps.bandit.outcome == 'failure' }}
+        run: exit 1
+
+  sca:
+    name: SCA (pip-audit)
+    if: ${{ inputs.run-sca }}
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: ${{ inputs.working-directory }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: ${{ inputs.python-version }}
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+          cache-dependency-glob: ${{ inputs.working-directory }}/uv.lock
+
+      - name: Install dependencies
+        run: uv sync --frozen
+
+      - name: Run pip-audit
+        id: pip-audit
+        continue-on-error: true
+        run: uv run pip-audit --format json --output "${{ inputs.pip-audit-artifact-path }}"
+
+      - name: Upload pip-audit report
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: python-sca-pip-audit
+          path: ${{ inputs.working-directory }}/${{ inputs.pip-audit-artifact-path }}
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Fail on pip-audit findings
+        if: ${{ steps.pip-audit.outcome == 'failure' }}
+        run: exit 1

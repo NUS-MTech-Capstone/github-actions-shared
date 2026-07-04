@@ -2,9 +2,9 @@
 
 Reusable CI/CD workflows for DenDenMushi service repositories.
 
-The workflows intentionally stop at test/build and image publishing. EKS rollout
-should be handled later by Kubernetes manifests and ArgoCD, not by service
-repositories directly applying manifests to the cluster.
+The workflows intentionally stop at test/build, image publishing, and GitOps
+promotion PRs. EKS rollout is handled by Kubernetes manifests and Argo CD, not
+by service repositories directly applying manifests to the cluster.
 
 ## Validation
 
@@ -68,6 +68,42 @@ jobs:
       sca-command: npm audit --omit=dev --audit-level=high --json > npm-audit.json
       sca-artifact-path: npm-audit.json
       coverage-lcov-path: coverage/lcov.info
+```
+
+### Python CI
+
+Create `.github/workflows/ci.yaml` in a Python service repository:
+
+```yaml
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  ci:
+    uses: NUS-MTech-Capstone/github-actions-shared/.github/workflows/python-ci.yaml@main
+    with:
+      python-version: "3.12"
+```
+
+The Python workflow uses `uv sync --frozen`, Ruff lint and format checks, Mypy,
+Pytest, a package build, Bandit SAST, and `pip-audit` SCA. Coverage, Bandit,
+and `pip-audit` reports are uploaded as artifacts for 14 days. SAST, SCA,
+coverage, lint, format, and type checks are enabled by default.
+
+Temporary overrides:
+
+```yaml
+jobs:
+  ci:
+    uses: NUS-MTech-Capstone/github-actions-shared/.github/workflows/python-ci.yaml@main
+    with:
+      run-typecheck: true
+      run-sast: true
+      run-sca: true
 ```
 
 ### Go CI
@@ -139,9 +175,9 @@ jobs:
       AWS_ROLE_ARN: ${{ secrets.AWS_ROLE_ARN }}
 ```
 
-Use the commit SHA tag in Kubernetes manifests for deterministic releases. Later,
-ArgoCD Image Updater or a separate GitOps promotion workflow can update the
-image tag in the `kubernetes` repository after this workflow pushes to ECR.
+Use the commit SHA tag in Kubernetes manifests for deterministic releases. The
+GitOps promotion workflow updates the image tag in the `kubernetes` repository
+after this workflow pushes to ECR.
 
 Name the service workflow `cd.yaml` only when it also promotes or deploys the
 image. For this project, prefer:

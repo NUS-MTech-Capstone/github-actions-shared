@@ -98,6 +98,47 @@ class WorkflowsTest < Minitest::Test
     assert_refail_step sca_job, "Fail on govulncheck findings", "${{ steps.govulncheck.outcome == 'failure' }}"
   end
 
+  def test_python_ci_exposes_quality_gate_inputs
+    inputs = workflow_call_inputs(python_ci)
+
+    assert_equal "3.12", inputs.fetch("python-version").fetch("default")
+    assert_equal true, inputs.fetch("run-lint").fetch("default")
+    assert_equal true, inputs.fetch("run-format-check").fetch("default")
+    assert_equal true, inputs.fetch("run-typecheck").fetch("default")
+    assert_equal true, inputs.fetch("run-coverage").fetch("default")
+    assert_equal true, inputs.fetch("run-sast").fetch("default")
+    assert_equal true, inputs.fetch("run-sca").fetch("default")
+    assert_equal "bandit.json", inputs.fetch("bandit-artifact-path").fetch("default")
+    assert_equal "pip-audit.json", inputs.fetch("pip-audit-artifact-path").fetch("default")
+  end
+
+  def test_python_ci_runs_expected_checks
+    job = python_ci.fetch("jobs").fetch("ci")
+
+    assert_includes step_names(job), "Install dependencies"
+    assert_equal "uv sync --frozen", step_by_name(job, "Install dependencies").fetch("run")
+    assert_equal "uv run ruff check .", step_by_name(job, "Ruff check").fetch("run")
+    assert_equal "uv run ruff format --check .", step_by_name(job, "Ruff format check").fetch("run")
+    assert_equal "uv run mypy", step_by_name(job, "Mypy").fetch("run")
+    assert_includes step_by_name(job, "Pytest").fetch("run"), "uv run pytest --cov=incident_agent"
+    assert_equal "uv build --no-build-isolation", step_by_name(job, "Build package").fetch("run")
+    assert_artifact_upload job, "Upload coverage reports", "python-coverage", "${{ inputs.working-directory }}/coverage.xml", "${{ always() && inputs.run-coverage }}"
+  end
+
+  def test_python_ci_uploads_security_artifacts_and_refails
+    sast_job = python_ci.fetch("jobs").fetch("sast")
+    sca_job = python_ci.fetch("jobs").fetch("sca")
+
+    assert_equal "${{ inputs.run-sast }}", sast_job.fetch("if")
+    assert_equal "${{ inputs.run-sca }}", sca_job.fetch("if")
+    assert_equal true, step_by_name(sast_job, "Run Bandit").fetch("continue-on-error")
+    assert_equal true, step_by_name(sca_job, "Run pip-audit").fetch("continue-on-error")
+    assert_artifact_upload sast_job, "Upload Bandit report", "python-sast-bandit", "${{ inputs.working-directory }}/${{ inputs.bandit-artifact-path }}"
+    assert_artifact_upload sca_job, "Upload pip-audit report", "python-sca-pip-audit", "${{ inputs.working-directory }}/${{ inputs.pip-audit-artifact-path }}"
+    assert_refail_step sast_job, "Fail on Bandit findings", "${{ steps.bandit.outcome == 'failure' }}"
+    assert_refail_step sca_job, "Fail on pip-audit findings", "${{ steps.pip-audit.outcome == 'failure' }}"
+  end
+
   private
 
   def workflow_paths
@@ -110,6 +151,10 @@ class WorkflowsTest < Minitest::Test
 
   def go_ci
     @go_ci ||= YAML.load_file(File.join(WORKFLOW_DIR, "go-ci.yaml"))
+  end
+
+  def python_ci
+    @python_ci ||= YAML.load_file(File.join(WORKFLOW_DIR, "python-ci.yaml"))
   end
 
   def docker_image
@@ -134,7 +179,7 @@ class WorkflowsTest < Minitest::Test
     step = step_by_name(job, step_name)
 
     assert_equal condition, step.fetch("if")
-    assert_equal "actions/upload-artifact@v4", step.fetch("uses")
+    assert_match(/\Aactions\/upload-artifact@v(?:[4-9]|\d{2,})\z/, step.fetch("uses"))
     assert_equal artifact_name, step.fetch("with").fetch("name")
     assert_includes step.fetch("with").fetch("path"), artifact_path if artifact_path
     assert_equal 14, step.fetch("with").fetch("retention-days")

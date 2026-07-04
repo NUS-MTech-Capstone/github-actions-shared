@@ -8,7 +8,9 @@ blocks for DenDenMushi service repositories.
 Primary responsibilities:
 
 - Reusable Go CI workflows.
+- Reusable Node and Python CI workflows.
 - Reusable Docker image build and push workflows.
+- Reusable GitOps image-promotion workflows.
 - Shared ECR publishing conventions.
 - Common workflow documentation and examples.
 
@@ -19,13 +21,15 @@ input makes that behavior explicit.
 
 Service repositories should:
 
-- Run Go tests through reusable CI.
+- Run Go, Node, or Python checks through reusable CI as appropriate.
 - Build Docker images from their local Dockerfiles.
 - Push immutable image tags to ECR, usually `github.sha`.
+- Open or update GitOps promotion PRs against the `kubernetes` repository when
+  a deployable image should roll out.
 
-The `kubernetes` repository should decide which image tags run in EKS. Future
-ArgoCD or GitOps promotion should update Kubernetes manifests rather than having
-service repos deploy directly to the cluster.
+The `kubernetes` repository decides which image tags run in EKS. GitOps
+promotion updates Kubernetes manifests; service repositories and shared image
+workflows must not deploy directly to the cluster.
 
 ## Workflow Rules
 
@@ -37,6 +41,11 @@ service repos deploy directly to the cluster.
 - Prefer immutable tags for release paths; `latest` or branch tags may be extra
   convenience tags only.
 - Keep workflows service-agnostic.
+- Keep AI-agent services on the same CI bar as other services: tests, type or
+  vet checks, lint/format checks, SAST, SCA, and artifact retention where the
+  language workflow supports them.
+- Do not print secrets, tokens, model prompts containing sensitive data, or
+  command outputs into GitHub Actions logs.
 
 ## Validation
 
