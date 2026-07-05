@@ -16,6 +16,23 @@ ruby test/workflows_test.rb
 
 ## Usage
 
+## CI Steps
+
+| CI Step | Description |
+| --- | --- |
+| Checkout source | Checks out the service repository, or a requested source ref for image builds. |
+| Set up language runtime | Installs the configured Node.js, Python, or Go version and enables dependency caching where supported. |
+| Install dependencies | Restores project dependencies with the language-specific lockfile workflow, such as `npm ci`, `uv sync --frozen`, or `go mod download`. |
+| Lint and format checks | Runs optional or default non-mutating lint and format checks, such as npm lint, Ruff check, Ruff format check, or `go vet`. |
+| Type checks | Runs language type checks where supported, currently Mypy for Python services. |
+| Test and coverage | Runs the configured test command, optionally with race detection or coverage, and writes coverage summaries to the GitHub Actions job summary. |
+| Upload test artifacts | Retains coverage and test outputs as best-effort artifacts for 14 days. |
+| Build application | Builds the service package or server binary after checks pass. |
+| SAST scan | Runs static application security testing with Semgrep, Bandit, or gosec and uploads reports before failing on findings. |
+| SCA scan | Runs dependency vulnerability analysis with npm audit, pip-audit, or govulncheck and uploads reports before failing on findings. |
+| Build and push image | Builds the Docker image with Buildx, tags it with an immutable tag, and optionally pushes it to ECR through GitHub OIDC. |
+| Promote GitOps image | Updates the Kubernetes GitOps image tag, renders the target Kustomize overlay, and opens or updates the promotion PR. |
+
 ### Node CI
 
 Create `.github/workflows/ci.yaml` in a Node service repository:
