@@ -88,6 +88,14 @@ class WorkflowsTest < Minitest::Test
     assert_artifact_upload sca_job, "Upload govulncheck report", "go-sca-govulncheck", "${{ inputs.working-directory }}/${{ inputs.govulncheck-artifact-path }}"
   end
 
+  def test_go_ci_prints_gosec_text_output_while_writing_sarif
+    run_command = step_by_name(go_ci.fetch("jobs").fetch("sast"), "Run gosec").fetch("run")
+
+    assert_includes run_command, "-fmt sarif"
+    assert_includes run_command, "-stdout"
+    assert_includes run_command, "-verbose text"
+  end
+
   def test_go_ci_refails_after_security_artifact_uploads
     sast_job = go_ci.fetch("jobs").fetch("sast")
     sca_job = go_ci.fetch("jobs").fetch("sca")
