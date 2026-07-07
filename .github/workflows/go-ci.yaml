@@ -150,7 +150,7 @@ jobs:
       - name: Run gosec
         id: gosec
         continue-on-error: true
-        run: gosec -exclude-generated -fmt sarif -out "${{ inputs.gosec-artifact-path }}" ./...
+        run: gosec -exclude-generated -fmt sarif -out "${{ inputs.gosec-artifact-path }}" -stdout -verbose text ./...
 
       - name: Upload gosec report
         if: ${{ always() }}
