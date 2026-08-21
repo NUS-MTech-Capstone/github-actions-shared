@@ -196,6 +196,11 @@ Use the commit SHA tag in Kubernetes manifests for deterministic releases. The
 GitOps promotion workflow updates the image tag in the `kubernetes` repository
 after this workflow pushes to ECR.
 
+Do not add direct `push`, tag, or `workflow_dispatch` triggers to an image
+workflow. Those paths bypass the successful CI-run requirement. To retry a
+transient image publishing failure, rerun the `CI` workflow for the same
+`main` commit; the completed successful rerun will publish that exact SHA again.
+
 Name the service workflow `cd.yaml` only when it also promotes or deploys the
 image. For this project, prefer:
 
@@ -212,18 +217,19 @@ the Kubernetes GitOps repository:
 ```yaml
 jobs:
   promote:
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: image
     uses: NUS-MTech-Capstone/github-actions-shared/.github/workflows/promote-kubernetes-image.yaml@main
     with:
       service-name: session-manager
       image-name: 000000000000.dkr.ecr.ap-southeast-1.amazonaws.com/dendenmushi/session-manager
-      image-tag: ${{ github.sha }}
+      image-tag: ${{ github.event.workflow_run.head_sha }}
     secrets:
       GITOPS_TOKEN: ${{ secrets.GITOPS_TOKEN }}
 ```
 
 `GITOPS_TOKEN` should be a fine-scoped GitHub App token or equivalent credential
 that can push a branch and open a pull request in `NUS-MTech-Capstone/kubernetes`.
-The workflow updates exactly one image entry, renders the dev overlay with
-`kubectl kustomize`, and opens or updates a PR. Argo CD deploys after that PR is
-merged to the branch it tracks.
+The promotion job depends on the successful image job and uses the same tested
+SHA from the triggering CI run. The workflow updates exactly one image entry,
+renders the dev overlay with `kubectl kustomize`, and opens or updates a PR.
+Argo CD deploys after that PR is merged to the branch it tracks.
