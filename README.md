@@ -139,7 +139,7 @@ jobs:
   ci:
     uses: NUS-MTech-Capstone/github-actions-shared/.github/workflows/go-ci.yaml@main
     with:
-      go-version: "1.26.4"
+      go-version: "1.26.5"
 ```
 
 The Go workflow runs tests, `go vet`, a `gosec` SAST scan, and a
