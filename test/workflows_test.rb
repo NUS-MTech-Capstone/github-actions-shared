@@ -66,6 +66,7 @@ class WorkflowsTest < Minitest::Test
   def test_go_ci_exposes_security_artifact_inputs
     inputs = workflow_call_inputs(go_ci)
 
+    assert_equal "1.26.5", inputs.fetch("go-version").fetch("default")
     assert_equal "gosec.sarif", inputs.fetch("gosec-artifact-path").fetch("default")
     assert_equal "govulncheck.json", inputs.fetch("govulncheck-artifact-path").fetch("default")
   end

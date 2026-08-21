@@ -7,7 +7,7 @@ on:
         description: Go version used by the service.
         required: false
         type: string
-        default: "1.26.4"
+        default: "1.26.5"
       working-directory:
         description: Directory containing go.mod.
         required: false
