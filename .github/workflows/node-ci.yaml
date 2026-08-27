@@ -78,8 +78,9 @@ permissions:
   contents: read
 
 jobs:
-  ci:
-    name: Test and build
+  lint:
+    name: Lint
+    if: ${{ inputs.run-lint }}
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -99,8 +100,43 @@ jobs:
         run: npm ci
 
       - name: Lint
-        if: inputs.run-lint
-        run: ${{ inputs.lint-command }}
+        shell: bash
+        env:
+          LINT_COMMAND: ${{ inputs.lint-command }}
+        run: |
+          set -o pipefail
+          bash -c "$LINT_COMMAND" 2>&1 | tee lint.log
+
+      - name: Upload lint artifacts
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: node-lint-artifacts
+          path: ${{ inputs.working-directory }}/lint.log
+          if-no-files-found: ignore
+          retention-days: 14
+
+  test:
+    name: Test
+    needs: lint
+    if: ${{ always() && needs.lint.result != 'failure' && needs.lint.result != 'cancelled' }}
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: ${{ inputs.working-directory }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: ${{ inputs.node-version }}
+          cache: npm
+          cache-dependency-path: ${{ inputs.working-directory }}/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
 
       - name: Test
         run: ${{ inputs.test-command }}

@@ -58,8 +58,9 @@ permissions:
   contents: read
 
 jobs:
-  ci:
-    name: Lint, typecheck, test, and build
+  lint:
+    name: Lint
+    if: ${{ inputs.run-lint || inputs.run-format-check || inputs.run-typecheck }}
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -84,15 +85,62 @@ jobs:
 
       - name: Ruff check
         if: ${{ inputs.run-lint }}
-        run: uv run ruff check .
+        shell: bash
+        run: |
+          set -o pipefail
+          uv run ruff check . 2>&1 | tee ruff-check.log
 
       - name: Ruff format check
         if: ${{ inputs.run-format-check }}
-        run: uv run ruff format --check .
+        shell: bash
+        run: |
+          set -o pipefail
+          uv run ruff format --check . 2>&1 | tee ruff-format-check.log
 
       - name: Mypy
         if: ${{ inputs.run-typecheck }}
-        run: uv run mypy
+        shell: bash
+        run: |
+          set -o pipefail
+          uv run mypy 2>&1 | tee mypy.log
+
+      - name: Upload lint artifacts
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: python-lint-artifacts
+          path: |
+            ${{ inputs.working-directory }}/ruff-check.log
+            ${{ inputs.working-directory }}/ruff-format-check.log
+            ${{ inputs.working-directory }}/mypy.log
+          if-no-files-found: ignore
+          retention-days: 14
+
+  test:
+    name: Test
+    needs: lint
+    if: ${{ always() && needs.lint.result != 'failure' && needs.lint.result != 'cancelled' }}
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: ${{ inputs.working-directory }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: ${{ inputs.python-version }}
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+          cache-dependency-glob: ${{ inputs.working-directory }}/uv.lock
+
+      - name: Install dependencies
+        run: uv sync --frozen
 
       - name: Pytest
         env:

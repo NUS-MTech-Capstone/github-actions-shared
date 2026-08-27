@@ -51,8 +51,20 @@ class WorkflowsTest < Minitest::Test
     assert_refail_step job, "Fail on npm audit findings", "${{ steps.npm-audit.outcome == 'failure' }}"
   end
 
+  def test_node_ci_runs_lint_in_dedicated_job
+    lint_job = node_ci.fetch("jobs").fetch("lint")
+    test_job = node_ci.fetch("jobs").fetch("test")
+
+    assert_equal "Lint", lint_job.fetch("name")
+    assert_equal "${{ inputs.run-lint }}", lint_job.fetch("if")
+    assert_includes step_by_name(lint_job, "Lint").fetch("run"), "tee lint.log"
+    assert_artifact_upload lint_job, "Upload lint artifacts", "node-lint-artifacts", "${{ inputs.working-directory }}/lint.log"
+    assert_test_job_depends_on_lint test_job
+    refute_includes step_names(test_job), "Lint"
+  end
+
   def test_node_ci_uploads_test_artifacts
-    job = node_ci.fetch("jobs").fetch("ci")
+    job = node_ci.fetch("jobs").fetch("test")
 
     assert_includes step_names(job), "Generate coverage summary"
     assert_equal "${{ always() && inputs.coverage-lcov-path != '' }}",
@@ -71,6 +83,32 @@ class WorkflowsTest < Minitest::Test
     assert_equal "govulncheck.json", inputs.fetch("govulncheck-artifact-path").fetch("default")
   end
 
+  def test_terraform_ci_exposes_plan_only_inputs
+    inputs = workflow_call_inputs(terraform_ci)
+
+    assert_equal "1.14.5", inputs.fetch("terraform-version").fetch("default")
+    assert_equal ".", inputs.fetch("working-directory").fetch("default")
+    assert_equal "ap-southeast-1", inputs.fetch("aws-region").fetch("default")
+    assert_equal "-input=false -lockfile=readonly", inputs.fetch("terraform-init-args").fetch("default")
+    assert_equal "-input=false -no-color", inputs.fetch("terraform-plan-args").fetch("default")
+    assert_equal true, inputs.fetch("run-plan").fetch("default")
+    assert_equal "", inputs.fetch("tfvars-json").fetch("default")
+  end
+
+  def test_terraform_ci_uses_oidc_and_does_not_apply
+    job = terraform_ci.fetch("jobs").fetch("terraform")
+
+    assert_equal "write", terraform_ci.fetch("permissions").fetch("id-token")
+    assert_includes step_names(job), "Configure AWS credentials"
+    assert_equal "${{ secrets.AWS_ROLE_ARN }}",
+                 step_by_name(job, "Configure AWS credentials").fetch("with").fetch("role-to-assume")
+    assert_includes step_by_name(job, "Terraform init").fetch("run"), "terraform init"
+    assert_includes step_by_name(job, "Terraform validate").fetch("run"), "terraform validate"
+    assert_equal "${{ inputs.run-plan }}", step_by_name(job, "Terraform plan").fetch("if")
+    assert_includes step_by_name(job, "Terraform plan").fetch("run"), "terraform plan"
+    refute_includes step_names(job), "Terraform apply"
+  end
+
   def test_docker_image_workflow_can_checkout_explicit_source_ref
     inputs = workflow_call_inputs(docker_image)
     checkout = step_by_name(docker_image.fetch("jobs").fetch("image"), "Checkout")
@@ -87,6 +125,19 @@ class WorkflowsTest < Minitest::Test
     assert_artifact_upload test_job, "Upload coverage reports", "go-coverage", nil, "${{ always() && inputs.run-coverage }}"
     assert_artifact_upload sast_job, "Upload gosec report", "go-sast-gosec", "${{ inputs.working-directory }}/${{ inputs.gosec-artifact-path }}"
     assert_artifact_upload sca_job, "Upload govulncheck report", "go-sca-govulncheck", "${{ inputs.working-directory }}/${{ inputs.govulncheck-artifact-path }}"
+  end
+
+  def test_go_ci_runs_lint_in_dedicated_job
+    lint_job = go_ci.fetch("jobs").fetch("lint")
+    test_job = go_ci.fetch("jobs").fetch("test")
+
+    assert_equal "Lint", lint_job.fetch("name")
+    assert_equal "${{ inputs.run-vet }}", lint_job.fetch("if")
+    assert_includes step_by_name(lint_job, "Vet").fetch("run"), "go vet ./..."
+    assert_includes step_by_name(lint_job, "Vet").fetch("run"), "tee go-vet.log"
+    assert_artifact_upload lint_job, "Upload lint artifacts", "go-lint-artifacts", "${{ inputs.working-directory }}/go-vet.log"
+    assert_test_job_depends_on_lint test_job
+    refute_includes step_names(test_job), "Vet"
   end
 
   def test_go_ci_prints_gosec_text_output_while_writing_sarif
@@ -122,16 +173,27 @@ class WorkflowsTest < Minitest::Test
   end
 
   def test_python_ci_runs_expected_checks
-    job = python_ci.fetch("jobs").fetch("ci")
+    lint_job = python_ci.fetch("jobs").fetch("lint")
+    test_job = python_ci.fetch("jobs").fetch("test")
 
-    assert_includes step_names(job), "Install dependencies"
-    assert_equal "uv sync --frozen", step_by_name(job, "Install dependencies").fetch("run")
-    assert_equal "uv run ruff check .", step_by_name(job, "Ruff check").fetch("run")
-    assert_equal "uv run ruff format --check .", step_by_name(job, "Ruff format check").fetch("run")
-    assert_equal "uv run mypy", step_by_name(job, "Mypy").fetch("run")
-    assert_includes step_by_name(job, "Pytest").fetch("run"), "uv run pytest --cov=incident_agent"
-    assert_equal "uv build --no-build-isolation", step_by_name(job, "Build package").fetch("run")
-    assert_artifact_upload job, "Upload coverage reports", "python-coverage", "${{ inputs.working-directory }}/coverage.xml", "${{ always() && inputs.run-coverage }}"
+    assert_equal "Lint", lint_job.fetch("name")
+    assert_equal "${{ inputs.run-lint || inputs.run-format-check || inputs.run-typecheck }}", lint_job.fetch("if")
+    assert_includes step_names(lint_job), "Install dependencies"
+    assert_equal "uv sync --frozen", step_by_name(lint_job, "Install dependencies").fetch("run")
+    assert_includes step_by_name(lint_job, "Ruff check").fetch("run"), "uv run ruff check ."
+    assert_includes step_by_name(lint_job, "Ruff check").fetch("run"), "tee ruff-check.log"
+    assert_includes step_by_name(lint_job, "Ruff format check").fetch("run"), "uv run ruff format --check ."
+    assert_includes step_by_name(lint_job, "Ruff format check").fetch("run"), "tee ruff-format-check.log"
+    assert_includes step_by_name(lint_job, "Mypy").fetch("run"), "uv run mypy"
+    assert_includes step_by_name(lint_job, "Mypy").fetch("run"), "tee mypy.log"
+    assert_artifact_upload lint_job, "Upload lint artifacts", "python-lint-artifacts", "${{ inputs.working-directory }}/ruff-check.log"
+
+    assert_test_job_depends_on_lint test_job
+    assert_includes step_names(test_job), "Install dependencies"
+    assert_equal "uv sync --frozen", step_by_name(test_job, "Install dependencies").fetch("run")
+    assert_includes step_by_name(test_job, "Pytest").fetch("run"), "uv run pytest --cov=incident_agent"
+    assert_equal "uv build --no-build-isolation", step_by_name(test_job, "Build package").fetch("run")
+    assert_artifact_upload test_job, "Upload coverage reports", "python-coverage", "${{ inputs.working-directory }}/coverage.xml", "${{ always() && inputs.run-coverage }}"
   end
 
   def test_python_ci_uploads_security_artifacts_and_refails
@@ -166,6 +228,10 @@ class WorkflowsTest < Minitest::Test
     @python_ci ||= YAML.load_file(File.join(WORKFLOW_DIR, "python-ci.yaml"))
   end
 
+  def terraform_ci
+    @terraform_ci ||= YAML.load_file(File.join(WORKFLOW_DIR, "terraform-ci.yaml"))
+  end
+
   def docker_image
     @docker_image ||= YAML.load_file(File.join(WORKFLOW_DIR, "docker-build-push-ecr.yaml"))
   end
@@ -192,6 +258,13 @@ class WorkflowsTest < Minitest::Test
     assert_equal artifact_name, step.fetch("with").fetch("name")
     assert_includes step.fetch("with").fetch("path"), artifact_path if artifact_path
     assert_equal 14, step.fetch("with").fetch("retention-days")
+  end
+
+  def assert_test_job_depends_on_lint(job)
+    assert_equal "Test", job.fetch("name")
+    assert_equal "lint", job.fetch("needs")
+    assert_equal "${{ always() && needs.lint.result != 'failure' && needs.lint.result != 'cancelled' }}",
+                 job.fetch("if")
   end
 
   def assert_refail_step(job, step_name, condition)

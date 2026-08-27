@@ -23,13 +23,15 @@ ruby test/workflows_test.rb
 | Checkout source | Checks out the service repository, or a requested source ref for image builds. |
 | Set up language runtime | Installs the configured Node.js, Python, or Go version and enables dependency caching where supported. |
 | Install dependencies | Restores project dependencies with the language-specific lockfile workflow, such as `npm ci`, `uv sync --frozen`, or `go mod download`. |
-| Lint and format checks | Runs optional or default non-mutating lint and format checks, such as npm lint, Ruff check, Ruff format check, or `go vet`. |
-| Type checks | Runs language type checks where supported, currently Mypy for Python services. |
+| Lint and format checks | Runs optional or default non-mutating lint and format checks in a dedicated Lint job, such as npm lint, Ruff check, Ruff format check, or `go vet`. |
+| Type checks | Runs language type checks where supported, currently Mypy for Python services in the Lint job. |
+| Upload lint artifacts | Retains best-effort lint and type-check logs for 14 days. |
 | Test and coverage | Runs the configured test command, optionally with race detection or coverage, and writes coverage summaries to the GitHub Actions job summary. |
 | Upload test artifacts | Retains coverage and test outputs as best-effort artifacts for 14 days. |
 | Build application | Builds the service package or server binary after checks pass. |
 | SAST scan | Runs static application security testing with Semgrep, Bandit, or gosec and uploads reports before failing on findings. |
 | SCA scan | Runs dependency vulnerability analysis with npm audit, pip-audit, or govulncheck and uploads reports before failing on findings. |
+| Terraform plan | Runs Terraform fmt, init, validate, and plan through GitHub OIDC without apply. |
 | Build and push image | Builds the Docker image with Buildx, tags it with an immutable tag, and optionally pushes it to ECR through GitHub OIDC. |
 | Promote GitOps image | Updates the Kubernetes GitOps image tag, renders the target Kustomize overlay, and opens or updates the promotion PR. |
 
@@ -48,13 +50,14 @@ jobs:
       build-command: npm run build
 ```
 
-The workflow uses `npm ci`, npm dependency caching, optional non-mutating lint,
-tests, a production build, a Semgrep SAST scan, and a production-dependency
-`npm audit` SCA scan.
+The workflow uses `npm ci`, npm dependency caching, optional non-mutating lint
+in a dedicated `Lint` job, tests in a `Test` job, a production build, a Semgrep
+SAST scan, and a production-dependency `npm audit` SCA scan.
 It uploads best-effort test/coverage artifacts from `coverage/**`, generates a
 coverage table in the GitHub Actions job summary when `coverage/lcov.info`
-exists, and uploads `coverage-summary.md` with the test artifacts. Semgrep SARIF
-and npm audit JSON reports are retained as separate artifacts for 14 days.
+exists, and uploads `coverage-summary.md` with the test artifacts. When lint is
+enabled, `lint.log` is retained as the `node-lint-artifacts` artifact. Semgrep
+SARIF and npm audit JSON reports are retained as separate artifacts for 14 days.
 SAST and SCA are enabled by default. A repository can disable one temporarily,
 override the commands, or point artifact inputs at custom report paths.
 
@@ -106,10 +109,11 @@ jobs:
       python-version: "3.12"
 ```
 
-The Python workflow uses `uv sync --frozen`, Ruff lint and format checks, Mypy,
-Pytest, a package build, Bandit SAST, and `pip-audit` SCA. Coverage, Bandit,
-and `pip-audit` reports are uploaded as artifacts for 14 days. SAST, SCA,
-coverage, lint, format, and type checks are enabled by default.
+The Python workflow uses `uv sync --frozen`, Ruff lint and format checks plus
+Mypy in a dedicated `Lint` job, Pytest and package build in a `Test` job,
+Bandit SAST, and `pip-audit` SCA. Coverage, lint/type-check logs, Bandit, and
+`pip-audit` reports are uploaded as artifacts for 14 days. SAST, SCA, coverage,
+lint, format, and type checks are enabled by default.
 
 Temporary overrides:
 
@@ -142,12 +146,13 @@ jobs:
       go-version: "1.26.5"
 ```
 
-The Go workflow runs tests, `go vet`, a `gosec` SAST scan, and a
-`govulncheck` SCA scan. Tests generate coverage by default. The coverage table
-is written to the GitHub Actions job summary, and `coverage.out`,
-`coverage.txt`, and a browsable `coverage.html` are uploaded in the
-`go-coverage` artifact for 14 days. SAST and SCA reports are uploaded as
-`go-sast-gosec` and `go-sca-govulncheck`.
+The Go workflow runs `go vet` in a dedicated `Lint` job, tests in a `Test` job,
+a `gosec` SAST scan, and a `govulncheck` SCA scan. Tests generate coverage by
+default. The coverage table is written to the GitHub Actions job summary, and
+`coverage.out`, `coverage.txt`, and a browsable `coverage.html` are uploaded in
+the `go-coverage` artifact for 14 days. The `go vet` log is uploaded as
+`go-lint-artifacts`. SAST and SCA reports are uploaded as `go-sast-gosec` and
+`go-sca-govulncheck`.
 
 Coverage and both scans are enabled by default. A repository can disable one
 temporarily or pin a different `gosec` release:
@@ -162,6 +167,55 @@ jobs:
       run-sca: true
       gosec-version: "v2.27.1"
 ```
+
+### Terraform CI
+
+Create `.github/workflows/ci.yaml` in an infrastructure repository:
+
+```yaml
+name: Terraform CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  terraform:
+    uses: NUS-MTech-Capstone/github-actions-shared/.github/workflows/terraform-ci.yaml@main
+    with:
+      terraform-version: "1.14.5"
+    secrets:
+      AWS_ROLE_ARN: ${{ secrets.AWS_TERRAFORM_PLAN_ROLE_ARN }}
+```
+
+The workflow assumes an AWS role through GitHub OIDC, then runs
+`terraform fmt -check -recursive`, `terraform init`, `terraform validate`, and
+`terraform plan`. It intentionally does not run `terraform apply`.
+
+For repositories with required variables that are not needed as real values for
+speculative CI plans, pass harmless placeholders as JSON:
+
+```yaml
+jobs:
+  terraform:
+    uses: NUS-MTech-Capstone/github-actions-shared/.github/workflows/terraform-ci.yaml@main
+    with:
+      tfvars-json: |
+        {
+          "postgres_db_password": "ci-placeholder-password"
+        }
+    secrets:
+      AWS_ROLE_ARN: ${{ secrets.AWS_TERRAFORM_PLAN_ROLE_ARN }}
+```
+
+If a repository needs sensitive plan-time variables, pass a JSON object through
+the optional `TFVARS_JSON` secret. The workflow writes it to
+`ci.secret.auto.tfvars.json` on the runner and does not echo its content.
 
 ### Build and Push Image to ECR
 

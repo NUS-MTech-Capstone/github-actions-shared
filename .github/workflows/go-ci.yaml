@@ -58,8 +58,9 @@ permissions:
   contents: read
 
 jobs:
-  test:
-    name: Test
+  lint:
+    name: Lint
+    if: ${{ inputs.run-vet }}
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -79,8 +80,41 @@ jobs:
         run: go mod download
 
       - name: Vet
-        if: ${{ inputs.run-vet }}
-        run: go vet ./...
+        shell: bash
+        run: |
+          set -o pipefail
+          go vet ./... 2>&1 | tee go-vet.log
+
+      - name: Upload lint artifacts
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: go-lint-artifacts
+          path: ${{ inputs.working-directory }}/go-vet.log
+          if-no-files-found: ignore
+          retention-days: 14
+
+  test:
+    name: Test
+    needs: lint
+    if: ${{ always() && needs.lint.result != 'failure' && needs.lint.result != 'cancelled' }}
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: ${{ inputs.working-directory }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version: ${{ inputs.go-version }}
+          cache: true
+          cache-dependency-path: ${{ inputs.working-directory }}/go.mod
+
+      - name: Download modules
+        run: go mod download
 
       - name: Test
         shell: bash
