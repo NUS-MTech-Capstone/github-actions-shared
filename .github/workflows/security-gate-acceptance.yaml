@@ -1,0 +1,45 @@
+name: Security gate acceptance fixtures
+
+on:
+  workflow_dispatch:
+    inputs:
+      scenario:
+        description: Negative scenarios intentionally fail and retain reports.
+        type: choice
+        required: true
+        options: [clean, finding, malformed, scanner-error]
+
+permissions:
+  contents: read
+
+jobs:
+  gate:
+    strategy:
+      fail-fast: false
+      matrix:
+        stack: [go, node]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+      - name: Execute production gate against controlled scanner output
+        env:
+          STACK: ${{ matrix.stack }}
+          SCENARIO: ${{ inputs.scenario }}
+        run: ruby test/run_security_fixture.rb "$STACK" "$SCENARIO"
+      - name: Retain report even when gate fails
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: security-fixture-${{ matrix.stack }}-${{ inputs.scenario }}
+          path: fixture-output/
+          if-no-files-found: error
+          retention-days: 90
+
+  release-eligibility:
+    needs: gate
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo 'Both gates passed. Fixture workflow publishes no images.'

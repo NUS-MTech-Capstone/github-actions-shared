@@ -328,3 +328,13 @@ idempotence, and downgrade rejection.
 Project service callers set `require-digest: true`; the tag fallback remains
 available only for callers that have not migrated. A missing build digest then
 fails promotion even when the existing overlay still uses a tag.
+
+## Controlled security-gate acceptance
+
+The manually dispatched `Security gate acceptance fixtures` workflow executes
+the production Go and Semgrep gate commands with isolated scanner outputs.
+Run `clean`, `finding`, `malformed`, and `scanner-error` scenarios. Negative
+scenarios deliberately fail, retain their reports and exit statuses for 90 days,
+and skip the dependent release-eligibility job. This fixture workflow cannot
+publish images or access deployment credentials. Ordinary CI separately runs
+the behavioural test suite, including malformed/missing reports and overrides.
