@@ -324,3 +324,7 @@ SHA. Publication remains conditional on successful source CI; promotion depends
 on the successful image job. Shared behavioural tests exercise rejected/clean
 scanner results, scanner failures, malformed reports, digest migration,
 idempotence, and downgrade rejection.
+
+Project service callers set `require-digest: true`; the tag fallback remains
+available only for callers that have not migrated. A missing build digest then
+fails promotion even when the existing overlay still uses a tag.
