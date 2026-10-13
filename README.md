@@ -11,7 +11,7 @@ by service repositories directly applying manifests to the cluster.
 Run the workflow tests before committing shared workflow changes:
 
 ```bash
-ruby test/workflows_test.rb
+ruby -Itest -e 'Dir["test/*_test.rb"].sort.each { |file| require File.expand_path(file) }'
 ```
 
 ## Usage
@@ -32,7 +32,7 @@ ruby test/workflows_test.rb
 | SAST scan | Runs static application security testing with Semgrep, Bandit, or gosec and uploads reports before failing on findings. |
 | SCA scan | Runs dependency vulnerability analysis with npm audit, pip-audit, or govulncheck and uploads reports before failing on findings. |
 | Terraform plan | Runs Terraform fmt, init, validate, and plan through GitHub OIDC without apply. |
-| Build and push image | Builds the Docker image with Buildx, tags it with an immutable tag, and optionally pushes it to ECR through GitHub OIDC. |
+| Build and push image | Builds the Docker image with Buildx, tags it with a source commit tag and exposes its content digest, and optionally pushes it to ECR through GitHub OIDC. |
 | Promote GitOps image | Updates the Kubernetes GitOps image tag, renders the target Kustomize overlay, and opens or updates the promotion PR. |
 
 ### Node CI
@@ -82,7 +82,7 @@ jobs:
     uses: NUS-MTech-Capstone/github-actions-shared/.github/workflows/node-ci.yaml@main
     with:
       run-sast: true
-      sast-command: semgrep scan --config auto --sarif --output semgrep.sarif .
+      sast-command: semgrep scan --error --config auto --sarif --output semgrep.sarif .
       sast-artifact-path: semgrep.sarif
       run-sca: true
       sca-command: npm audit --omit=dev --audit-level=high --json > npm-audit.json
@@ -246,8 +246,8 @@ jobs:
       AWS_ROLE_ARN: ${{ secrets.AWS_ROLE_ARN }}
 ```
 
-Use the commit SHA tag in Kubernetes manifests for deterministic releases. The
-GitOps promotion workflow updates the image tag in the `kubernetes` repository
+Use the build output digest in Kubernetes manifests for deterministic releases. Commit SHA tags are traceability labels, not an immutability guarantee. The
+GitOps promotion workflow updates the image digest in the `kubernetes` repository
 after this workflow pushes to ECR.
 
 Do not add direct `push`, tag, or `workflow_dispatch` triggers to an image
@@ -277,6 +277,7 @@ jobs:
       service-name: session-manager
       image-name: 000000000000.dkr.ecr.ap-southeast-1.amazonaws.com/dendenmushi/session-manager
       image-tag: ${{ github.event.workflow_run.head_sha }}
+      image-digest: ${{ needs.image.outputs.image-digest }}
     secrets:
       GITOPS_TOKEN: ${{ secrets.GITOPS_TOKEN }}
 ```
@@ -287,3 +288,39 @@ The promotion job depends on the successful image job and uses the same tested
 SHA from the triggering CI run. The workflow updates exactly one image entry,
 renders the dev overlay with `kubectl kustomize`, and opens or updates a PR.
 Argo CD deploys after that PR is merged to the branch it tracks.
+
+## Enforced scan and API contracts
+
+Go CI pins govulncheck v1.9.0 and scans at symbol level. The JSON report is
+retained and explicitly checked: reachable findings, scanner errors, unsupported
+report format, and empty/malformed reports fail the job. Package/module-only
+findings are retained for review but are not classified as reachable findings.
+Go CI defaults to Go 1.26.9; caller toolchains and Docker builders must agree.
+
+Node CI enables Semgrep `--error` and independently checks its SARIF results,
+including when a caller overrides the command. Scanner failures or missing/
+malformed reports fail even when no finding was emitted. Artifacts upload before
+the job propagates failure. No broad finding suppression is introduced.
+
+Specification-owning services call `openapi-ci.yaml` alongside their language CI.
+It validates OpenAPI 3.0/3.1 with `openapi-spec-validator==0.9.0` and retains the
+specification and validation result for 90 days. Service handler tests verify
+representative wire responses against the checked-in schemas.
+
+## Digest promotion migration
+
+`promote-kubernetes-image.yaml` accepts `image-digest` from
+`needs.image.outputs.image-digest`. It validates the SHA-256 digest, replaces the
+matching Kustomize `newTag` with `digest`, preserves unrelated image entries,
+and renders the overlay before opening a PR. `image-tag` remains the source
+label in the PR. Legacy tag-only callers remain compatible until their image is
+pinned; an already digest-pinned image cannot be downgraded by a legacy caller.
+All DenDenMushi deployment callers must pass the digest. Runtime verification
+must compare the deployed digest with the built OCI index or its platform
+manifest. Convenience aliases such as `main` are never deployment identities.
+
+Image revision labels use the checked-out source SHA, not the workflow trigger
+SHA. Publication remains conditional on successful source CI; promotion depends
+on the successful image job. Shared behavioural tests exercise rejected/clean
+scanner results, scanner failures, malformed reports, digest migration,
+idempotence, and downgrade rejection.

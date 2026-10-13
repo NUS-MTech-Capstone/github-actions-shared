@@ -16,7 +16,7 @@ class WorkflowsTest < Minitest::Test
     inputs = workflow_call_inputs(node_ci)
 
     assert_equal true, inputs.fetch("run-sast").fetch("default")
-    assert_equal "semgrep scan --config auto --sarif --output semgrep.sarif .",
+    assert_equal "semgrep scan --error --config auto --sarif --output semgrep.sarif .",
                  inputs.fetch("sast-command").fetch("default")
     assert_equal "semgrep.sarif", inputs.fetch("sast-artifact-path").fetch("default")
     assert_equal true, inputs.fetch("run-sca").fetch("default")
@@ -33,7 +33,7 @@ class WorkflowsTest < Minitest::Test
     assert_equal "${{ inputs.run-sast }}", job.fetch("if")
     assert_equal "semgrep/semgrep", job.fetch("container").fetch("image")
     assert_includes step_names(job), "Run Semgrep"
-    assert_equal "${{ inputs.sast-command }}", step_by_name(job, "Run Semgrep").fetch("run")
+    assert_includes step_by_name(job, "Run Semgrep").fetch("run"), 'bash -c "$SAST_COMMAND"'
     assert_equal true, step_by_name(job, "Run Semgrep").fetch("continue-on-error")
     assert_artifact_upload job, "Upload Semgrep report", "node-sast-semgrep", "${{ inputs.working-directory }}/${{ inputs.sast-artifact-path }}"
     assert_refail_step job, "Fail on Semgrep findings", "${{ steps.semgrep.outcome == 'failure' }}"
@@ -78,7 +78,7 @@ class WorkflowsTest < Minitest::Test
   def test_go_ci_exposes_security_artifact_inputs
     inputs = workflow_call_inputs(go_ci)
 
-    assert_equal "1.26.5", inputs.fetch("go-version").fetch("default")
+    assert_equal "1.26.9", inputs.fetch("go-version").fetch("default")
     assert_equal "gosec.sarif", inputs.fetch("gosec-artifact-path").fetch("default")
     assert_equal "govulncheck.json", inputs.fetch("govulncheck-artifact-path").fetch("default")
   end

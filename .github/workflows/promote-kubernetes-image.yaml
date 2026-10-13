@@ -12,9 +12,14 @@ on:
         required: true
         type: string
       image-tag:
-        description: Immutable image tag to promote.
+        description: Source tag for traceability; legacy fallback when image-digest is omitted.
         required: true
         type: string
+      image-digest:
+        description: Exact sha256 image digest returned by the successful build.
+        required: false
+        type: string
+        default: ""
       kubernetes-repository:
         description: GitOps repository containing Kubernetes manifests.
         required: false
@@ -56,42 +61,52 @@ jobs:
           token: ${{ secrets.GITOPS_TOKEN }}
           path: kubernetes
 
-      - name: Update Kustomize image tag
+      - name: Update Kustomize image reference
         working-directory: kubernetes
         shell: bash
         env:
           IMAGE_NAME: ${{ inputs.image-name }}
           IMAGE_TAG: ${{ inputs.image-tag }}
+          IMAGE_DIGEST: ${{ inputs.image-digest }}
           KUSTOMIZATION_PATH: ${{ inputs.kustomization-path }}
         run: |
           ruby <<'RUBY'
+          require "yaml"
           path = ENV.fetch("KUSTOMIZATION_PATH")
           image_name = ENV.fetch("IMAGE_NAME")
-          image_tag = ENV.fetch("IMAGE_TAG")
-          lines = File.readlines(path, chomp: true)
-          in_target = false
-          matches = 0
-          updated = false
-
-          lines.map! do |line|
-            if line =~ /^\s*-\s+name:\s+#{Regexp.escape(image_name)}\s*$/
-              in_target = true
-              matches += 1
-              line
-            elsif in_target && line =~ /^(\s*)newTag:\s+.*$/
-              in_target = false
-              updated = true
-              "#{$1}newTag: #{image_tag}"
-            elsif in_target && line =~ /^\s*-\s+name:\s+/
-              abort "image #{image_name} has no newTag before next image entry"
-            else
-              line
-            end
+          tag = ENV.fetch("IMAGE_TAG")
+          digest = ENV.fetch("IMAGE_DIGEST", "")
+          abort "invalid image tag" unless tag.match?(/\A[\w][\w.-]{0,127}\z/)
+          abort "invalid image digest" unless digest.empty? || digest.match?(/\Asha256:[a-f0-9]{64}\z/)
+          document = YAML.load_file(path)
+          entries = document.fetch("images").select { |entry| entry["name"] == image_name }
+          abort "expected exactly one image match for #{image_name}" unless entries.length == 1
+          entry = entries.first
+          if digest.empty?
+            # A legacy caller must not downgrade an already digest-pinned deployment.
+            abort "digest required for an already pinned image" if entry.key?("digest")
+          else
+            entry.delete("newTag")
           end
+          key, value = digest.empty? ? ["newTag", tag] : ["digest", digest]
+          entry[key] = value
 
-          abort "expected exactly one image match for #{image_name}, found #{matches}" unless matches == 1
-          abort "failed to update newTag for #{image_name}" unless updated
-          File.write(path, lines.join("\n") + "\n")
+          # Preserve unrelated formatting and replace only this image's tag/digest lines.
+          lines = File.readlines(path)
+          index = lines.index { |line| line.match?(/^\s*- name: #{Regexp.escape(image_name)}\s*$/) }
+          abort "image entry not found" unless index
+          indent = lines[index][/^\s*/].length
+          finish = index + 1
+          while finish < lines.length && (lines[finish].strip.empty? || lines[finish][/^\s*/].length > indent)
+            finish += 1
+          end
+          block = lines[index...finish].reject { |line| line.match?(/^\s+(newTag|digest):/) }
+          block.insert(block.index { |line| line.strip.empty? } || block.length, "#{' ' * (indent + 2)}#{key}: #{value}\n")
+          lines[index...finish] = block
+          updated = lines.join
+          actual = YAML.safe_load(updated).fetch("images").find { |item| item["name"] == image_name }
+          abort "image update validation failed" unless actual == entry
+          File.write(path, updated)
           RUBY
 
       - name: Render Kustomize overlay
@@ -105,6 +120,7 @@ jobs:
           GH_TOKEN: ${{ secrets.GITOPS_TOKEN }}
           SERVICE_NAME: ${{ inputs.service-name }}
           IMAGE_TAG: ${{ inputs.image-tag }}
+          IMAGE_DIGEST: ${{ inputs.image-digest }}
           BASE_BRANCH: ${{ inputs.base-branch }}
           KUSTOMIZATION_PATH: ${{ inputs.kustomization-path }}
           KUBERNETES_REPOSITORY: ${{ inputs.kubernetes-repository }}
@@ -114,7 +130,11 @@ jobs:
             exit 0
           fi
 
-          branch="promote/${SERVICE_NAME}-${IMAGE_TAG}"
+          release_id="${IMAGE_TAG}"
+          if [ -n "$IMAGE_DIGEST" ]; then
+            release_id="${IMAGE_TAG}-${IMAGE_DIGEST#sha256:}"
+          fi
+          branch="promote/${SERVICE_NAME}-${release_id}"
           git config user.name "dendenmushi-gitops-bot"
           git config user.email "dendenmushi-gitops-bot@users.noreply.github.com"
           git checkout -B "${branch}"
@@ -123,17 +143,22 @@ jobs:
           git push --force-with-lease origin "${branch}"
 
           title="chore: promote ${SERVICE_NAME} image ${IMAGE_TAG}"
-          body="Promotes \`${SERVICE_NAME}\` to immutable image tag \`${IMAGE_TAG}\` in the dev GitOps overlay."
+          body_file=$(mktemp)
+          cat > "$body_file" <<EOF
+          Promotes \`${SERVICE_NAME}\` from source tag \`${IMAGE_TAG}\` to digest \`${IMAGE_DIGEST:-legacy-tag-reference}\` in the dev GitOps overlay.
+
+          The image was published only after its source CI passed. Kustomize rendering passed before this PR was opened.
+          EOF
           if gh pr view "${branch}" --repo "${KUBERNETES_REPOSITORY}" >/dev/null 2>&1; then
             gh pr edit "${branch}" \
               --repo "${KUBERNETES_REPOSITORY}" \
               --title "${title}" \
-              --body "${body}"
+              --body-file "$body_file"
           else
             gh pr create \
               --repo "${KUBERNETES_REPOSITORY}" \
               --base "${BASE_BRANCH}" \
               --head "${branch}" \
               --title "${title}" \
-              --body "${body}"
+              --body-file "$body_file"
           fi

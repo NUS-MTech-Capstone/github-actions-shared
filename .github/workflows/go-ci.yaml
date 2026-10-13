@@ -7,7 +7,7 @@ on:
         description: Go version used by the service.
         required: false
         type: string
-        default: "1.26.5"
+        default: "1.26.9"
       working-directory:
         description: Directory containing go.mod.
         required: false
@@ -218,12 +218,49 @@ jobs:
           cache-dependency-path: ${{ inputs.working-directory }}/go.mod
 
       - name: Install govulncheck
-        run: go install golang.org/x/vuln/cmd/govulncheck@latest
+        run: go install golang.org/x/vuln/cmd/govulncheck@v1.9.0
 
       - name: Run govulncheck
         id: govulncheck
         continue-on-error: true
-        run: govulncheck -json ./... > "${{ inputs.govulncheck-artifact-path }}"
+        env:
+          REPORT_PATH: ${{ inputs.govulncheck-artifact-path }}
+        shell: bash
+        run: |
+          govulncheck -scan=symbol -json ./... > "$REPORT_PATH"
+          python3 - <<'PY'
+          import json, os, pathlib, sys
+          raw = pathlib.Path(os.environ["REPORT_PATH"]).read_text()
+          decoder = json.JSONDecoder()
+          offset = 0
+          configured = False
+          findings = set()
+          while offset < len(raw):
+              while offset < len(raw) and raw[offset].isspace():
+                  offset += 1
+              if offset == len(raw):
+                  break
+              message, offset = decoder.raw_decode(raw, offset)
+              if not isinstance(message, dict) or "error" in message:
+                  sys.exit("Invalid govulncheck message")
+              if "config" in message:
+                  config = message["config"]
+                  if configured or config.get("scan_level") != "symbol" or config.get("protocol_version") != "v1.0.0":
+                      sys.exit("Expected one supported symbol-level govulncheck configuration")
+                  configured = True
+              if "finding" in message:
+                  finding = message["finding"]
+                  trace = finding.get("trace")
+                  if not finding.get("osv") or not isinstance(trace, list) or not trace or not all(isinstance(frame, dict) for frame in trace):
+                      sys.exit("Malformed govulncheck finding")
+                  if trace[0].get("function"):
+                      findings.add(finding["osv"])
+          if not configured:
+              sys.exit("Missing govulncheck configuration; report is empty or incomplete")
+          if findings:
+              sys.exit("Reachable vulnerabilities: " + ", ".join(sorted(findings)))
+          print("No symbol-level vulnerabilities found")
+          PY
 
       - name: Upload govulncheck report
         if: ${{ always() }}
