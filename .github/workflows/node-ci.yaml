@@ -52,7 +52,7 @@ on:
         description: Static application security testing command.
         required: false
         type: string
-        default: semgrep scan --config auto --sarif --output semgrep.sarif .
+        default: semgrep scan --error --config auto --sarif --output semgrep.sarif .
       sast-artifact-path:
         description: Semgrep report path, relative to working-directory.
         required: false
@@ -78,8 +78,9 @@ permissions:
   contents: read
 
 jobs:
-  ci:
-    name: Test and build
+  lint:
+    name: Lint
+    if: ${{ inputs.run-lint }}
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -99,8 +100,43 @@ jobs:
         run: npm ci
 
       - name: Lint
-        if: inputs.run-lint
-        run: ${{ inputs.lint-command }}
+        shell: bash
+        env:
+          LINT_COMMAND: ${{ inputs.lint-command }}
+        run: |
+          set -o pipefail
+          bash -c "$LINT_COMMAND" 2>&1 | tee lint.log
+
+      - name: Upload lint artifacts
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: node-lint-artifacts
+          path: ${{ inputs.working-directory }}/lint.log
+          if-no-files-found: ignore
+          retention-days: 14
+
+  test:
+    name: Test
+    needs: lint
+    if: ${{ always() && needs.lint.result != 'failure' && needs.lint.result != 'cancelled' }}
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: ${{ inputs.working-directory }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: ${{ inputs.node-version }}
+          cache: npm
+          cache-dependency-path: ${{ inputs.working-directory }}/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
 
       - name: Test
         run: ${{ inputs.test-command }}
@@ -188,7 +224,37 @@ jobs:
       - name: Run Semgrep
         id: semgrep
         continue-on-error: true
-        run: ${{ inputs.sast-command }}
+        env:
+          SAST_COMMAND: ${{ inputs.sast-command }}
+          REPORT_PATH: ${{ inputs.sast-artifact-path }}
+        shell: bash
+        run: |
+          scan_status=0
+          bash -c "$SAST_COMMAND" || scan_status=$?
+          python3 - <<'PY'
+          import json, os, pathlib, sys
+          report = json.loads(pathlib.Path(os.environ["REPORT_PATH"]).read_text())
+          runs = report.get("runs")
+          if report.get("version") != "2.1.0" or not isinstance(runs, list) or not runs:
+              sys.exit("Missing or malformed Semgrep SARIF report")
+          findings = 0
+          for run in runs:
+              if not isinstance(run.get("results"), list):
+                  sys.exit("Missing Semgrep results")
+              for invocation in run.get("invocations", []):
+                  if invocation.get("executionSuccessful") is False:
+                      sys.exit("Semgrep reported unsuccessful execution")
+              for result in run["results"]:
+                  if not isinstance(result, dict) or not result.get("ruleId"):
+                      sys.exit("Malformed Semgrep result")
+                  # Only explicit scanner-accepted suppressions are excluded.
+                  if not any(s.get("status") == "accepted" for s in result.get("suppressions", [])):
+                      findings += 1
+          if findings:
+              sys.exit(f"Semgrep reported {findings} unsuppressed findings")
+          print("No unsuppressed Semgrep findings")
+          PY
+          exit "$scan_status"
 
       - name: Upload Semgrep report
         if: ${{ always() }}

@@ -75,6 +75,11 @@ jobs:
         with:
           ref: ${{ inputs.source-ref }}
 
+      - name: Resolve source revision
+        id: source
+        shell: bash
+        run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v6
         with:
@@ -96,9 +101,10 @@ jobs:
           REPOSITORY: ${{ inputs.ecr-repository }}
           IMAGE_TAG: ${{ inputs.image-tag }}
           EXTRA_TAGS: ${{ inputs.extra-tags }}
+          SOURCE_SHA: ${{ steps.source.outputs.sha }}
         run: |
           if [ -z "$IMAGE_TAG" ]; then
-            IMAGE_TAG="${GITHUB_SHA}"
+            IMAGE_TAG="${SOURCE_SHA}"
           fi
           image="$REGISTRY/$REPOSITORY"
           {
@@ -123,7 +129,7 @@ jobs:
           push: ${{ inputs.push }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: |
-            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.revision=${{ steps.source.outputs.sha }}
             org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
           cache-from: type=gha
           cache-to: type=gha,mode=max

@@ -1,0 +1,100 @@
+name: Terraform CI
+
+on:
+  workflow_call:
+    inputs:
+      terraform-version:
+        description: Terraform version used for fmt, init, validate, and plan.
+        required: false
+        type: string
+        default: "1.14.5"
+      working-directory:
+        description: Directory containing Terraform configuration.
+        required: false
+        type: string
+        default: "."
+      aws-region:
+        description: AWS region used for GitHub OIDC credentials and Terraform backend access.
+        required: false
+        type: string
+        default: ap-southeast-1
+      terraform-init-args:
+        description: Arguments passed to terraform init.
+        required: false
+        type: string
+        default: -input=false -lockfile=readonly
+      terraform-plan-args:
+        description: Arguments passed to terraform plan.
+        required: false
+        type: string
+        default: -input=false -no-color
+      tfvars-json:
+        description: Optional JSON object written to ci.auto.tfvars.json before validation and plan.
+        required: false
+        type: string
+        default: ""
+      run-plan:
+        description: Run terraform plan after validate.
+        required: false
+        type: boolean
+        default: true
+    secrets:
+      AWS_ROLE_ARN:
+        description: IAM role ARN assumed through GitHub OIDC for Terraform plan access.
+        required: true
+      TFVARS_JSON:
+        description: Optional sensitive JSON object written to ci.secret.auto.tfvars.json.
+        required: false
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  terraform:
+    name: Terraform
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: ${{ inputs.working-directory }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ inputs.aws-region }}
+
+      - name: Set up Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ inputs.terraform-version }}
+
+      - name: Write CI tfvars
+        shell: bash
+        env:
+          TFVARS_JSON_INPUT: ${{ inputs.tfvars-json }}
+          TFVARS_JSON_SECRET: ${{ secrets.TFVARS_JSON }}
+        run: |
+          if [ -n "$TFVARS_JSON_INPUT" ]; then
+            printf '%s\n' "$TFVARS_JSON_INPUT" > ci.auto.tfvars.json
+          fi
+
+          if [ -n "$TFVARS_JSON_SECRET" ]; then
+            printf '%s\n' "$TFVARS_JSON_SECRET" > ci.secret.auto.tfvars.json
+          fi
+
+      - name: Terraform format
+        run: terraform fmt -check -recursive
+
+      - name: Terraform init
+        run: terraform init ${{ inputs.terraform-init-args }}
+
+      - name: Terraform validate
+        run: terraform validate
+
+      - name: Terraform plan
+        if: ${{ inputs.run-plan }}
+        run: terraform plan ${{ inputs.terraform-plan-args }}
