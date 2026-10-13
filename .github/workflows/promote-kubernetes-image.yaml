@@ -20,6 +20,11 @@ on:
         required: false
         type: string
         default: ""
+      require-digest:
+        description: Reject a missing build digest; project callers enable this after migration.
+        required: false
+        type: boolean
+        default: false
       kubernetes-repository:
         description: GitOps repository containing Kubernetes manifests.
         required: false
@@ -68,6 +73,7 @@ jobs:
           IMAGE_NAME: ${{ inputs.image-name }}
           IMAGE_TAG: ${{ inputs.image-tag }}
           IMAGE_DIGEST: ${{ inputs.image-digest }}
+          REQUIRE_DIGEST: ${{ inputs.require-digest }}
           KUSTOMIZATION_PATH: ${{ inputs.kustomization-path }}
         run: |
           ruby <<'RUBY'
@@ -76,6 +82,7 @@ jobs:
           image_name = ENV.fetch("IMAGE_NAME")
           tag = ENV.fetch("IMAGE_TAG")
           digest = ENV.fetch("IMAGE_DIGEST", "")
+          abort "image digest is required by this caller" if ENV["REQUIRE_DIGEST"] == "true" && digest.empty?
           abort "invalid image tag" unless tag.match?(/\A[\w][\w.-]{0,127}\z/)
           abort "invalid image digest" unless digest.empty? || digest.match?(/\Asha256:[a-f0-9]{64}\z/)
           document = YAML.load_file(path)
