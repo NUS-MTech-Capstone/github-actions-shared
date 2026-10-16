@@ -4,97 +4,305 @@ on:
   workflow_call:
     inputs:
       terraform-version:
-        description: Terraform version used for fmt, init, validate, and plan.
-        required: false
+        description: Terraform CLI version.
         type: string
         default: "1.14.5"
       working-directory:
         description: Directory containing Terraform configuration.
-        required: false
         type: string
         default: "."
       aws-region:
-        description: AWS region used for GitHub OIDC credentials and Terraform backend access.
-        required: false
+        description: AWS region for OIDC and backend access.
         type: string
         default: ap-southeast-1
       terraform-init-args:
-        description: Arguments passed to terraform init.
-        required: false
+        description: Backend initialization arguments for live planning.
         type: string
         default: -input=false -lockfile=readonly
       terraform-plan-args:
-        description: Arguments passed to terraform plan.
-        required: false
+        description: Additional full, refreshed plan arguments; no targeting or saved plan files.
         type: string
         default: -input=false -no-color
       tfvars-json:
-        description: Optional JSON object written to ci.auto.tfvars.json before validation and plan.
-        required: false
+        description: Optional non-sensitive JSON variable object.
+        type: string
+        default: ""
+      required-variable-files:
+        description: Space-separated variable filenames that must be supplied to the plan.
         type: string
         default: ""
       run-plan:
-        description: Run terraform plan after validate.
-        required: false
+        description: Enable a real AWS plan after credential-free validation.
         type: boolean
         default: true
     secrets:
       AWS_ROLE_ARN:
-        description: IAM role ARN assumed through GitHub OIDC for Terraform plan access.
-        required: true
+        description: Read-only AWS OIDC role; required when run-plan is true.
+        required: false
       TFVARS_JSON:
-        description: Optional sensitive JSON object written to ci.secret.auto.tfvars.json.
+        description: Optional secret JSON variable object.
+        required: false
+      TFVARS_HCL:
+        description: Optional existing secrets.tfvars content; never logged or uploaded.
+        required: false
+      TEAMMATE_TFVARS_HCL:
+        description: Optional existing teammate-access.local.tfvars content.
         required: false
 
 permissions:
   contents: read
-  id-token: write
 
 jobs:
-  terraform:
-    name: Terraform
+  validate:
+    name: Terraform validation
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     defaults:
       run:
         working-directory: ${{ inputs.working-directory }}
     steps:
       - name: Checkout
         uses: actions/checkout@v7
+      - name: Set up Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ inputs.terraform-version }}
+          terraform_wrapper: false
+      - name: Validate without AWS credentials
+        env:
+          TF_IN_AUTOMATION: "true"
+          TF_INPUT: "false"
+        run: |
+          python3 - <<'PYCODE'
+          import json, pathlib, subprocess
+          output = pathlib.Path('.terraform-ci')
+          output.mkdir(exist_ok=True)
+          report = {'status': 'failed', 'steps': []}
+          try:
+              for args in [['fmt', '-check', '-recursive'], ['init', '-backend=false', '-input=false', '-lockfile=readonly'], ['validate', '-no-color']]:
+                  result = subprocess.run(['terraform', *args], timeout=600)
+                  report['steps'].append({'step': args[0], 'exit_code': result.returncode})
+                  if result.returncode:
+                      raise RuntimeError('Terraform validation failed')
+              report['status'] = 'passed'
+          finally:
+              (output / 'validation.json').write_text(json.dumps(report, indent=2) + '\n')
+          PYCODE
+      - name: Upload validation result
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: terraform-validation
+          path: ${{ inputs.working-directory }}/.terraform-ci/validation.json
+          if-no-files-found: error
+          retention-days: 14
+      - name: Explain archived or untrusted plan skip
+        if: ${{ !inputs.run-plan || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository) }}
+        run: echo 'Live AWS planning was explicitly disabled or unavailable to an untrusted PR. This run validates configuration only.' >> "$GITHUB_STEP_SUMMARY"
 
+  plan:
+    name: Terraform live plan
+    needs: validate
+    if: ${{ inputs.run-plan && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    concurrency:
+      group: terraform-plan-${{ github.repository }}-${{ github.ref }}
+      cancel-in-progress: false
+    permissions:
+      contents: read
+      id-token: write
+    defaults:
+      run:
+        working-directory: ${{ inputs.working-directory }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+      - name: Check live-plan configuration
+        env:
+          AWS_ROLE_ARN: ${{ secrets.AWS_ROLE_ARN }}
+        run: |
+          mkdir -p .terraform-ci
+          printf '%s\n' '{"status":"failed","stage":"authentication","error":"Live plan did not reach execution"}' > .terraform-ci/plan.json
+          if [ -z "$AWS_ROLE_ARN" ]; then
+            echo 'AWS_ROLE_ARN is required for live planning.' >&2
+            exit 1
+          fi
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
         with:
           role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
           aws-region: ${{ inputs.aws-region }}
-
+          role-duration-seconds: 1800
+          retry-max-attempts: 3
       - name: Set up Terraform
         uses: hashicorp/setup-terraform@v3
         with:
           terraform_version: ${{ inputs.terraform-version }}
-
-      - name: Write CI tfvars
-        shell: bash
+          terraform_wrapper: false
+      - name: Run refreshed read-only plan
         env:
+          TF_IN_AUTOMATION: "true"
+          TF_INPUT: "false"
+          AWS_ROLE_ARN: ${{ secrets.AWS_ROLE_ARN }}
           TFVARS_JSON_INPUT: ${{ inputs.tfvars-json }}
           TFVARS_JSON_SECRET: ${{ secrets.TFVARS_JSON }}
+          TFVARS_HCL: ${{ secrets.TFVARS_HCL }}
+          TEAMMATE_TFVARS_HCL: ${{ secrets.TEAMMATE_TFVARS_HCL }}
+          REQUIRED_VARIABLE_FILES: ${{ inputs.required-variable-files }}
+          TERRAFORM_INIT_ARGS: ${{ inputs.terraform-init-args }}
+          TERRAFORM_PLAN_ARGS: ${{ inputs.terraform-plan-args }}
         run: |
-          if [ -n "$TFVARS_JSON_INPUT" ]; then
-            printf '%s\n' "$TFVARS_JSON_INPUT" > ci.auto.tfvars.json
-          fi
+          python3 - <<'PYCODE'
+          import json
+          import os
+          from pathlib import Path
+          import re
+          import shlex
+          import signal
+          import subprocess
+          import tempfile
 
-          if [ -n "$TFVARS_JSON_SECRET" ]; then
-            printf '%s\n' "$TFVARS_JSON_SECRET" > ci.secret.auto.tfvars.json
-          fi
+          report_dir = Path('.terraform-ci')
+          report_dir.mkdir(exist_ok=True)
+          report = {'status': 'failed', 'stage': 'inputs', 'source_sha': os.environ.get('GITHUB_SHA', ''), 'diagnostics': []}
+          redactions = []
 
-      - name: Terraform format
-        run: terraform fmt -check -recursive
+          def strings(value):
+              if isinstance(value, dict):
+                  for item in value.values():
+                      yield from strings(item)
+              elif isinstance(value, list):
+                  for item in value:
+                      yield from strings(item)
+              elif isinstance(value, str) and len(value) >= 4:
+                  yield value
 
-      - name: Terraform init
-        run: terraform init ${{ inputs.terraform-init-args }}
+          def safe(text):
+              text = str(text)
+              for value in sorted(set(redactions), key=len, reverse=True):
+                  text = text.replace(value, '[redacted]')
+              text = re.sub(r'(?i)(password|token|secret|api[_-]?key)\s*[:=]\s*\S+', r'\1=[redacted]', text)
+              text = re.sub(r'\x1b\[[0-9;]*m', '', text)
+              return text[:300]
 
-      - name: Terraform validate
-        run: terraform validate
+          def interrupted(signum, frame):
+              raise InterruptedError('Interrupted')
 
-      - name: Terraform plan
-        if: ${{ inputs.run-plan }}
-        run: terraform plan ${{ inputs.terraform-plan-args }}
+          signal.signal(signal.SIGTERM, interrupted)
+          signal.signal(signal.SIGINT, interrupted)
+
+          def run(args, output):
+              with output.open('w') as handle:
+                  process = subprocess.Popen(['terraform', *args], stdout=handle, stderr=subprocess.STDOUT, start_new_session=True)
+                  try:
+                      return process.wait(timeout=900)
+                  except BaseException:
+                      os.killpg(process.pid, signal.SIGTERM)
+                      try:
+                          process.wait(timeout=5)
+                      except subprocess.TimeoutExpired:
+                          os.killpg(process.pid, signal.SIGKILL)
+                          process.wait()
+                      raise
+
+          try:
+              with tempfile.TemporaryDirectory(prefix='terraform-ci-') as temp:
+                  private = Path(temp)
+                  files = []
+                  materialized = set()
+                  for env, name, is_json in [
+                      ('TFVARS_JSON_INPUT', 'ci.auto.tfvars.json', True),
+                      ('TFVARS_JSON_SECRET', 'ci.secret.auto.tfvars.json', True),
+                      ('TFVARS_HCL', 'secrets.tfvars', False),
+                      ('TEAMMATE_TFVARS_HCL', 'teammate-access.local.tfvars', False),
+                  ]:
+                      value = os.environ.get(env, '')
+                      if not value.strip():
+                          continue
+                      if is_json:
+                          parsed = json.loads(value)
+                          if not isinstance(parsed, dict):
+                              raise ValueError('Variable JSON must be an object')
+                          redactions.extend(strings(parsed))
+                      else:
+                          # Diagnostics never include HCL excerpts; also mask literal string values.
+                          for literal in re.findall(r'"(?:[^"\\]|\\.)*"', value):
+                              try:
+                                  redactions.extend(strings(json.loads(literal)))
+                              except ValueError:
+                                  pass
+                      path = private / name
+                      path.write_text(value)
+                      path.chmod(0o600)
+                      materialized.add(name)
+                      files.append('-var-file=' + str(path))
+                  required = set(os.environ.get('REQUIRED_VARIABLE_FILES', '').split())
+                  if not required <= materialized:
+                      raise ValueError('Required variable files are missing')
+                  if not os.environ.get('AWS_ROLE_ARN', '').strip():
+                      raise ValueError('AWS_ROLE_ARN is required for live planning')
+                  init_args = shlex.split(os.environ.get('TERRAFORM_INIT_ARGS', '-input=false -lockfile=readonly'))
+                  plan_args = shlex.split(os.environ.get('TERRAFORM_PLAN_ARGS', '-input=false -no-color'))
+                  # Live planning must refresh the real backend and must never create a reusable apply plan.
+                  if any(a.startswith(('-backend=false', '-backend-config')) for a in init_args):
+                      raise ValueError('Live planning requires the checked-in backend')
+                  if any(a.startswith(('-out', '-refresh=false', '-target', '-destroy', '-var', '-lock')) for a in plan_args):
+                      raise ValueError('Plan arguments must preserve full refreshed read-only planning')
+                  report['stage'] = 'init'
+                  code = run(['init', *init_args], private / 'init.log')
+                  report['init_exit_code'] = code
+                  if code != 0:
+                      report['diagnostics'] = [{'severity': 'error', 'summary': safe(line)} for line in (private / 'init.log').read_text().splitlines() if 'Error:' in line][:10]
+                      raise RuntimeError('Terraform backend initialization failed')
+                  report['stage'] = 'plan'
+                  output = private / 'plan.jsonl'
+                  code = run(['plan', *plan_args, '-input=false', '-lock=false', '-json', '-detailed-exitcode', *files], output)
+                  report['plan_exit_code'] = code
+                  malformed = False
+                  summary = None
+                  for line in output.read_text().splitlines():
+                      try:
+                          event = json.loads(line)
+                          if not isinstance(event, dict):
+                              raise ValueError('Expected JSON event')
+                      except ValueError:
+                          malformed = True
+                          continue
+                      if event.get('type') == 'change_summary':
+                          changes = event.get('changes', {})
+                          if all(type(changes.get(k)) is int and changes[k] >= 0 for k in ['add', 'change', 'remove']):
+                              summary = {k: changes[k] for k in ['add', 'change', 'remove']}
+                      if event.get('type') == 'diagnostic':
+                          diag = event.get('diagnostic', {})
+                          report['diagnostics'].append({'severity': safe(diag.get('severity', 'unknown')), 'summary': safe(diag.get('summary', 'Terraform diagnostic'))})
+                  report['changes'] = summary
+                  if code not in (0, 2):
+                      raise RuntimeError('Terraform plan failed')
+                  if malformed or summary is None:
+                      raise ValueError('Terraform plan output is malformed or missing its change summary')
+                  if any(d['severity'] == 'error' for d in report['diagnostics']):
+                      raise RuntimeError('Terraform reported an error diagnostic')
+                  report['status'] = 'passed'
+                  report['stage'] = 'complete'
+          except (Exception, KeyboardInterrupt) as error:
+              # Exception details from parsers/processes may contain inputs; retain only classified failures.
+              allowed = (ValueError, RuntimeError, InterruptedError)
+              report['error'] = safe(str(error)) if type(error) in allowed and not isinstance(error, json.JSONDecodeError) else type(error).__name__
+          finally:
+              rendered = json.dumps(report, indent=2) + '\n'
+              (report_dir / 'plan.json').write_text(rendered)
+              print(rendered)
+              if os.environ.get('GITHUB_STEP_SUMMARY'):
+                  with open(os.environ['GITHUB_STEP_SUMMARY'], 'a') as handle:
+                      handle.write('### Terraform live plan\n\n```json\n' + rendered + '```\n')
+          raise SystemExit(0 if report['status'] == 'passed' else 1)
+          PYCODE
+      - name: Upload sanitized plan result
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: terraform-plan-summary
+          path: ${{ inputs.working-directory }}/.terraform-ci/plan.json
+          if-no-files-found: error
+          retention-days: 14

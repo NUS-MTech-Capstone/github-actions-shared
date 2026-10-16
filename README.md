@@ -170,52 +170,49 @@ jobs:
 
 ### Terraform CI
 
-Create `.github/workflows/ci.yaml` in an infrastructure repository:
+The reusable Terraform workflow always checks formatting, initializes locked
+providers/modules with `-backend=false`, and validates configuration without AWS
+credentials. Terraform 1.14.5 is the default. Validation artifacts are retained
+for 14 days, including on failure.
+
+With `run-plan: true` (the default), a separate dependent job assumes the supplied
+read-only AWS role through OIDC and runs a full refreshed plan against the
+checked-in backend. Fork PRs never receive this job. Callers must restrict push
+and manual-dispatch branches to those allowed by their role trust policy.
+No workflow performs apply or destroy. Plans use `-lock=false` because the role
+cannot mutate state; operators must avoid concurrent infrastructure applies.
 
 ```yaml
-name: Terraform CI
-
-on:
-  pull_request:
-  push:
-    branches: [main]
-
-permissions:
-  contents: read
-  id-token: write
-
 jobs:
   terraform:
-    uses: NUS-MTech-Capstone/github-actions-shared/.github/workflows/terraform-ci.yaml@main
+    permissions:
+      contents: read
+      id-token: write
+    uses: NUS-MTech-Capstone/github-actions-shared/.github/workflows/terraform-ci.yaml@<reviewed-commit-sha>
     with:
       terraform-version: "1.14.5"
+      required-variable-files: secrets.tfvars teammate-access.local.tfvars
     secrets:
       AWS_ROLE_ARN: ${{ secrets.AWS_TERRAFORM_PLAN_ROLE_ARN }}
+      TFVARS_HCL: ${{ secrets.TERRAFORM_TFVARS_HCL }}
+      TEAMMATE_TFVARS_HCL: ${{ secrets.TERRAFORM_TEAMMATE_TFVARS_HCL }}
 ```
 
-The workflow assumes an AWS role through GitHub OIDC, then runs
-`terraform fmt -check -recursive`, `terraform init`, `terraform validate`, and
-`terraform plan`. It intentionally does not run `terraform apply`.
+`tfvars-json` and secret `TFVARS_JSON` remain supported. Input JSON is applied
+before secret JSON, then `secrets.tfvars`, then `teammate-access.local.tfvars`.
+`required-variable-files` names the supplied files that must exist; missing
+inputs or malformed JSON fail the plan. Variable files have mode 0600 and are
+removed with raw execution output on success, failure and handled interruption.
 
-For repositories with required variables that are not needed as real values for
-speculative CI plans, pass harmless placeholders as JSON:
+Plan exit codes 0 (no changes) and 2 (changes proposed) pass; errors, malformed
+output and missing summaries fail. The artifact and job summary contain only
+source identity, stage/exit status, change counts and sanitized diagnostic
+summaries. They never contain state, variable contents, saved apply plans,
+resource values or raw provider diagnostics. Raw plan files can contain secrets.
 
-```yaml
-jobs:
-  terraform:
-    uses: NUS-MTech-Capstone/github-actions-shared/.github/workflows/terraform-ci.yaml@main
-    with:
-      tfvars-json: |
-        {
-          "postgres_db_password": "ci-placeholder-password"
-        }
-    secrets:
-      AWS_ROLE_ARN: ${{ secrets.AWS_TERRAFORM_PLAN_ROLE_ARN }}
-```
-
-If a repository needs sensitive plan-time variables, pass a JSON object through
-the optional `TFVARS_JSON` secret. The workflow writes it to
-`ci.secret.auto.tfvars.json` on the runner and does not echo its content.
+Use `run-plan: false` explicitly for retired environments or validation-only
+callers; this needs no AWS role and reports that live planning was not performed.
+Do not silently disable planning to hide authentication or backend failures.
 
 ### Build and Push Image to ECR
 
