@@ -14,8 +14,6 @@ Run the workflow tests before committing shared workflow changes:
 ruby -Itest -e 'Dir["test/*_test.rb"].sort.each { |file| require File.expand_path(file) }'
 ```
 
-## Usage
-
 ## CI Steps
 
 | CI Step | Description |
@@ -33,7 +31,7 @@ ruby -Itest -e 'Dir["test/*_test.rb"].sort.each { |file| require File.expand_pat
 | SCA scan | Runs dependency vulnerability analysis with npm audit, pip-audit, or govulncheck and uploads reports before failing on findings. |
 | Terraform plan | Runs Terraform fmt, init, validate, and plan through GitHub OIDC without apply. |
 | Build and push image | Builds the Docker image with Buildx, tags it with a source commit tag and exposes its content digest, and optionally pushes it to ECR through GitHub OIDC. |
-| Promote GitOps image | Updates the Kubernetes GitOps image tag, renders the target Kustomize overlay, and opens or updates the promotion PR. |
+| Promote GitOps image | Updates the Kubernetes GitOps image digest, renders the target Kustomize overlay, and opens or updates the promotion PR. |
 
 ### Node CI
 
@@ -58,8 +56,8 @@ coverage table in the GitHub Actions job summary when `coverage/lcov.info`
 exists, and uploads `coverage-summary.md` with the test artifacts. When lint is
 enabled, `lint.log` is retained as the `node-lint-artifacts` artifact. Semgrep
 SARIF and npm audit JSON reports are retained as separate artifacts for 14 days.
-SAST and SCA are enabled by default. A repository can disable one temporarily,
-override the commands, or point artifact inputs at custom report paths.
+SAST and SCA are enabled by default. Custom commands and report paths retain
+the shared finding and report-validation gates.
 
 For Angular CLI projects, use an Angular coverage command:
 
@@ -115,7 +113,7 @@ Bandit SAST, and `pip-audit` SCA. Coverage, lint/type-check logs, Bandit, and
 `pip-audit` reports are uploaded as artifacts for 14 days. SAST, SCA, coverage,
 lint, format, and type checks are enabled by default.
 
-Temporary overrides:
+Explicit check settings:
 
 ```yaml
 jobs:
@@ -143,7 +141,7 @@ jobs:
   ci:
     uses: NUS-MTech-Capstone/github-actions-shared/.github/workflows/go-ci.yaml@main
     with:
-      go-version: "1.26.5"
+      go-version: "1.26.9"
 ```
 
 The Go workflow runs `go vet` in a dedicated `Lint` job, tests in a `Test` job,
@@ -154,8 +152,8 @@ the `go-coverage` artifact for 14 days. The `go vet` log is uploaded as
 `go-lint-artifacts`. SAST and SCA reports are uploaded as `go-sast-gosec` and
 `go-sca-govulncheck`.
 
-Coverage and both scans are enabled by default. A repository can disable one
-temporarily or pin a different `gosec` release:
+Coverage and both scans are enabled by default. Explicit settings can also pin
+the `gosec` release:
 
 ```yaml
 jobs:
@@ -163,7 +161,7 @@ jobs:
     uses: NUS-MTech-Capstone/github-actions-shared/.github/workflows/go-ci.yaml@main
     with:
       run-coverage: true
-      run-sast: false
+      run-sast: true
       run-sca: true
       gosec-version: "v2.27.1"
 ```
@@ -208,11 +206,10 @@ Plan exit codes 0 (no changes) and 2 (changes proposed) pass; errors, malformed
 output and missing summaries fail. The artifact and job summary contain only
 source identity, stage/exit status, change counts and sanitized diagnostic
 summaries. They never contain state, variable contents, saved apply plans,
-resource values or raw provider diagnostics. Raw plan files can contain secrets.
+resource values or raw provider diagnostics.
 
 Use `run-plan: false` explicitly for retired environments or validation-only
 callers; this needs no AWS role and reports that live planning was not performed.
-Do not silently disable planning to hide authentication or backend failures.
 
 ### Build and Push Image to ECR
 
@@ -258,7 +255,7 @@ image. For this project, prefer:
 - `ci.yaml`: tests, build, coverage, SAST, and SCA.
 - `image.yaml`: build and push the immutable image to ECR.
 - `promote.yaml`: open or update the GitOps PR that changes the Kubernetes
-  image tag.
+  image digest.
 
 ### Promote Image to Kubernetes GitOps
 
@@ -275,6 +272,7 @@ jobs:
       image-name: 000000000000.dkr.ecr.ap-southeast-1.amazonaws.com/dendenmushi/session-manager
       image-tag: ${{ github.event.workflow_run.head_sha }}
       image-digest: ${{ needs.image.outputs.image-digest }}
+      require-digest: true
     secrets:
       GITOPS_TOKEN: ${{ secrets.GITOPS_TOKEN }}
 ```
@@ -297,14 +295,14 @@ Go CI defaults to Go 1.26.9; caller toolchains and Docker builders must agree.
 Node CI enables Semgrep `--error` and independently checks its SARIF results,
 including when a caller overrides the command. Scanner failures or missing/
 malformed reports fail even when no finding was emitted. Artifacts upload before
-the job propagates failure. No broad finding suppression is introduced.
+the job propagates failure.
 
 Specification-owning services call `openapi-ci.yaml` alongside their language CI.
 It validates OpenAPI 3.0/3.1 with `openapi-spec-validator==0.9.0` and retains the
 specification and validation result for 90 days. Service handler tests verify
 representative wire responses against the checked-in schemas.
 
-## Digest promotion migration
+## Digest promotion
 
 `promote-kubernetes-image.yaml` accepts `image-digest` from
 `needs.image.outputs.image-digest`. It validates the SHA-256 digest, replaces the
