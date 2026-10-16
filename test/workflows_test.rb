@@ -95,17 +95,12 @@ class WorkflowsTest < Minitest::Test
     assert_equal "", inputs.fetch("tfvars-json").fetch("default")
   end
 
-  def test_terraform_ci_uses_oidc_and_does_not_apply
-    job = terraform_ci.fetch("jobs").fetch("terraform")
-
-    assert_equal "write", terraform_ci.fetch("permissions").fetch("id-token")
-    assert_includes step_names(job), "Configure AWS credentials"
+  def test_terraform_ci_uses_oidc_only_for_live_plan
+    job = terraform_ci.fetch("jobs").fetch("plan")
+    assert_equal "write", job.fetch("permissions").fetch("id-token")
     assert_equal "${{ secrets.AWS_ROLE_ARN }}",
                  step_by_name(job, "Configure AWS credentials").fetch("with").fetch("role-to-assume")
-    assert_includes step_by_name(job, "Terraform init").fetch("run"), "terraform init"
-    assert_includes step_by_name(job, "Terraform validate").fetch("run"), "terraform validate"
-    assert_equal "${{ inputs.run-plan }}", step_by_name(job, "Terraform plan").fetch("if")
-    assert_includes step_by_name(job, "Terraform plan").fetch("run"), "terraform plan"
+    assert_includes step_names(job), "Run refreshed read-only plan"
     refute_includes step_names(job), "Terraform apply"
   end
 
